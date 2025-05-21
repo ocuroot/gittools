@@ -1,12 +1,33 @@
 package gitlock
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*GitRepo, func()) {
+	t.Helper()
+
+	// Create a temporary directory for the remote repository
+	localDir, err := os.MkdirTemp("", "gitlock-local-")
+	if err != nil {
+		t.Fatalf("Failed to create local temp directory: %v", err)
+	}
+
+	repo, err := Clone(fmt.Sprintf("file://%s", remoteDir), localDir)
+	if err != nil {
+		os.RemoveAll(localDir)
+		t.Fatalf("Failed to clone remote repository: %v", err)
+	}
+
+	return repo, func() {
+		os.RemoveAll(localDir)
+	}
+}
 
 // setupRemoteTestRepo creates a local repository with a "remote" repository in a temp directory
 // Returns: repoPath, remotePath, cleanup function
@@ -24,6 +45,14 @@ func setupRemoteTestRepo(t *testing.T) (string, string, func()) {
 	if err := cmd.Run(); err != nil {
 		os.RemoveAll(remoteDir)
 		t.Fatalf("Failed to initialize bare git repository: %v", err)
+	}
+
+	// Set main as the default branch for the remote
+	cmd = exec.Command("git", "symbolic-ref", "HEAD", "refs/heads/main")
+	cmd.Dir = remoteDir
+	if err := cmd.Run(); err != nil {
+		os.RemoveAll(remoteDir)
+		t.Fatalf("Failed to set default branch for remote: %v", err)
 	}
 
 	// Create a temporary directory for the local repository
@@ -138,7 +167,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	// Debug lock file path
 	t.Logf("Lock file path: %s", absLockPath)
 
-	err = repo.AcquireLock(lockPath, 5*time.Second, 10*time.Minute, "Test lock")
+	err = repo.AcquireLock(lockPath, 10*time.Minute, "Test lock")
 	if err != nil {
 		t.Fatalf("Failed to acquire lock: %v", err)
 	}
@@ -151,13 +180,19 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock exists
-	isOwner, lock, err := repo.IsLocked(lockPath)
+	lock, err := repo.IsLocked(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock: %v", err)
 	}
 
+	// Check if we own the lock
+	ownsLock, err := repo.OwnsLock(lockPath)
+	if err != nil {
+		t.Fatalf("Failed to check lock ownership: %v", err)
+	}
+
 	// Add debug output to diagnose the issue
-	t.Logf("Is owner: %v", isOwner)
+	t.Logf("Owns lock: %v", ownsLock)
 	t.Logf("Lock: %+v", lock)
 	t.Logf("Repo LockKey: %s", repo.LockKey)
 
@@ -167,12 +202,9 @@ func TestLockAcquireRelease(t *testing.T) {
 
 	if lock.Owner != repo.LockKey {
 		t.Errorf("Expected lock owner to be %s, got %s", repo.LockKey, lock.Owner)
-	} else {
-		// If owner matches, mark as owner
-		isOwner = true
 	}
 
-	if !isOwner {
+	if !ownsLock {
 		t.Errorf("Expected to be the owner of the lock, but was not")
 	}
 	if lock.Description != "Test lock" {
@@ -190,7 +222,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock was refreshed
-	_, lock, err = repo.IsLocked(lockPath)
+	lock, err = repo.IsLocked(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock after refresh: %v", err)
 	}
@@ -206,7 +238,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock was released
-	isOwner, lock, err = repo.IsLocked(lockPath)
+	lock, err = repo.IsLocked(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock after release: %v", err)
 	}

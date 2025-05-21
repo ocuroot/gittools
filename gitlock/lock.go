@@ -5,96 +5,83 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
 // AcquireLock attempts to acquire a lock on the specified lockFilePath
 // It will return ErrLockConflict if the lock is already held by another process
-// The timeout specifies how long to wait for the lock to be available
+// The timeout parameter is kept for API compatibility but no longer used for retries
 // expiryDuration specifies how long the lock should be valid for
-func (g *GitRepo) AcquireLock(lockFilePath string, timeout time.Duration, expiryDuration time.Duration, description string) error {
-	// startTime is unused for now, but will be needed if we reimplement timeout logic
-	// time.Now()
-
-	// Try to acquire the lock
-	for {
-		currentBranch, err := g.CurrentBranch()
-		if err != nil {
-			return fmt.Errorf("failed to get current branch: %w", err)
-		}
-
-		// Make sure we have latest changes
-		// Silently continue if fetch fails (e.g., during tests)
-		_ = g.Fetch("origin")
-
-		// Checkout main branch
-		if err := g.Checkout("main"); err != nil {
-			return fmt.Errorf("failed to checkout main branch: %w", err)
-		}
-
-		// Pull latest changes (ignore errors in test environments)
-		_ = g.Pull("origin", "main")
-
-		// For test environments, create the main branch if it doesn't exist
-		// This helps with tests that don't properly set up remote branches
-		currentBranchName, _ := g.CurrentBranch()
-		if currentBranchName != "main" && strings.TrimSpace(currentBranchName) == "" {
-			// We're in detached HEAD or unknown state, create main
-			_, _ = g.execGitCommand("checkout", "-b", "main")
-		}
-
-		// Create lock file directory if it doesn't exist
-		lockDir := filepath.Dir(filepath.Join(g.RepoPath, lockFilePath))
-		if err := os.MkdirAll(lockDir, 0755); err != nil {
-			return fmt.Errorf("failed to create lock directory: %w", err)
-		}
-
-		// Create the lock file
-		lock := Lock{
-			Owner:       g.LockKey,
-			CreatedAt:   time.Now(),
-			ExpiresAt:   time.Now().Add(expiryDuration),
-			Description: description,
-		}
-
-		lockData, err := json.MarshalIndent(lock, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal lock data: %w", err)
-		}
-
-		lockFileFull := filepath.Join(g.RepoPath, lockFilePath)
-		if err := os.WriteFile(lockFileFull, lockData, 0644); err != nil {
-			return fmt.Errorf("failed to write lock file: %w", err)
-		}
-
-		// Commit the lock file
-		if err := g.Commit(fmt.Sprintf("Acquire lock for %s", lockFilePath), []string{lockFilePath}); err != nil {
-			return fmt.Errorf("failed to commit lock file: %w", err)
-		}
-
-		// Try to push the branch - will fail if there's a conflict
-		// For tests, we'll consider the operation successful even if push fails
-		_ = g.Push("origin", currentBranch)
-
-		return nil
-
-		// This part is unreachable now, but we'll keep it commented for future reference
-		// when we want to re-enable timeout and retry logic
-		/*
-			// Check if timeout has elapsed
-			if time.Since(startTime) > timeout {
-				_ = g.Checkout(currentBranch)
-				return ErrLockConflict
-			}
-
-			// Wait a bit before trying again
-			time.Sleep(1 * time.Second)
-
-			// Restore original branch before retrying
-			_ = g.Checkout(currentBranch)
-		*/
+func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration, description string) error {
+	currentBranch, err := g.CurrentBranch()
+	if err != nil {
+		return fmt.Errorf("failed to get current branch: %w", err)
 	}
+
+	// Make sure we have latest changes
+	// Silently continue if fetch fails (e.g., during tests)
+	err = g.Pull("origin", currentBranch)
+	if err != nil {
+		return fmt.Errorf("failed to pull latest changes: %w", err)
+	}
+
+	// Check if lock already exists
+	existingLock, err := g.IsLocked(lockFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to check lock status: %w", err)
+	}
+
+	// Check if we own the lock
+	ownsLock, err := g.OwnsLock(lockFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to check lock ownership: %w", err)
+	}
+
+	// If locked by someone else, return error
+	if existingLock != nil && !ownsLock {
+		return ErrLockConflict
+	}
+
+	// Create lock file directory if it doesn't exist
+	lockDir := filepath.Dir(lockFilePath)
+	if err := os.MkdirAll(filepath.Join(g.RepoPath, lockDir), 0755); err != nil {
+		return fmt.Errorf("failed to create lock directory: %w", err)
+	}
+
+	// Create the lock object
+	lock := &Lock{
+		Owner:       g.LockKey,
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(expiryDuration),
+		Description: description,
+	}
+
+	// Write the lock file
+	lockContent, err := json.Marshal(lock)
+	if err != nil {
+		return fmt.Errorf("failed to marshal lock: %w", err)
+	}
+
+	fullLockPath := filepath.Join(g.RepoPath, lockFilePath)
+	if err := os.WriteFile(fullLockPath, lockContent, 0644); err != nil {
+		return fmt.Errorf("failed to write lock file: %w", err)
+	}
+
+	// Commit and push the lock file
+	if err := g.Commit(fmt.Sprintf("Acquire lock on %s", lockFilePath), []string{lockFilePath}); err != nil {
+		// Remove the lock file
+		_ = os.Remove(fullLockPath)
+		return fmt.Errorf("failed to commit lock file: %w", err)
+	}
+
+	// Try to push the lock
+	err = g.Push("origin", currentBranch)
+	if err != nil {
+		// Push failed, likely a conflict
+		return ErrLockConflict
+	}
+
+	return nil
 }
 
 // ReleaseLock releases a lock by deleting the lock file
@@ -106,11 +93,11 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 	}
 
 	// Check if we're the owner of the lock
-	isOwner, _, err := g.IsLocked(lockFilePath)
+	ownsLock, err := g.OwnsLock(lockFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
-	if !isOwner {
+	if !ownsLock {
 		return fmt.Errorf("cannot release lock that is not owned by this process")
 	}
 
@@ -119,13 +106,8 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 		return fmt.Errorf("failed to fetch latest changes: %w", err)
 	}
 
-	// Checkout main branch
-	if err := g.Checkout("main"); err != nil {
-		return fmt.Errorf("failed to checkout main branch: %w", err)
-	}
-
 	// Pull latest changes
-	if err := g.Pull("origin", "main"); err != nil {
+	if err := g.Pull("origin", currentBranch); err != nil {
 		return fmt.Errorf("failed to pull latest changes: %w", err)
 	}
 
@@ -160,11 +142,17 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 	}
 
 	// Check if we're the owner of the lock
-	isOwner, lock, err := g.IsLocked(lockFilePath)
+	lock, err := g.IsLocked(lockFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
-	if !isOwner {
+
+	ownsLock, err := g.OwnsLock(lockFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to check lock ownership: %w", err)
+	}
+
+	if !ownsLock {
 		return fmt.Errorf("cannot refresh lock that is not owned by this process")
 	}
 
@@ -215,10 +203,9 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 
 // IsLocked checks if a resource is locked and returns the lock if it exists
 // Returns:
-// - bool: true if the resource is locked by this process
 // - *Lock: the lock object if the resource is locked, nil otherwise
 // - error: any error that occurred
-func (g *GitRepo) IsLocked(lockFilePath string) (bool, *Lock, error) {
+func (g *GitRepo) IsLocked(lockFilePath string) (*Lock, error) {
 	// Make sure we have latest changes (ignore errors in test environments)
 	_ = g.Fetch("origin")
 
@@ -231,26 +218,40 @@ func (g *GitRepo) IsLocked(lockFilePath string) (bool, *Lock, error) {
 	data, err := os.ReadFile(lockFileFull)
 	if os.IsNotExist(err) {
 		// No lock file, resource is not locked
-		return false, nil, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, nil, fmt.Errorf("failed to read lock file: %w", err)
+		return nil, fmt.Errorf("failed to read lock file: %w", err)
 	}
 
 	// Parse the lock file
 	var lock Lock
 	if err := json.Unmarshal(data, &lock); err != nil {
-		return false, nil, fmt.Errorf("failed to parse lock file: %w", err)
+		return nil, fmt.Errorf("failed to parse lock file: %w", err)
 	}
 
 	// Check if the lock is expired
 	if time.Now().After(lock.ExpiresAt) {
 		// Lock is expired
-		return false, nil, nil
+		return nil, nil
 	}
 
-	// Check if we're the owner
-	isOwner := lock.Owner == g.LockKey
+	return &lock, nil
+}
 
-	return isOwner, &lock, nil
+// OwnsLock checks if this repo owns the lock on the specified resource
+// Returns:
+// - bool: true if this repo owns the lock, false otherwise
+// - error: any error that occurred
+func (g *GitRepo) OwnsLock(lockFilePath string) (bool, error) {
+	lock, err := g.IsLocked(lockFilePath)
+	if err != nil {
+		return false, err
+	}
+
+	if lock == nil {
+		return false, nil
+	}
+
+	return lock.Owner == g.LockKey, nil
 }

@@ -63,6 +63,13 @@ func Clone(url, destination string) (*GitRepo, error) {
 		return nil, fmt.Errorf("git clone failed: %s: %w", output, err)
 	}
 
+	// After cloning, explicitly check out the main branch
+	cmd = exec.Command("git", "checkout", "main")
+	cmd.Dir = absPath
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to checkout main branch: %s: %w", output, err)
+	}
+
 	// Generate a ULID for this instance
 	id := ulid.Make().String()
 
@@ -110,9 +117,9 @@ func (g *GitRepo) Fetch(remote string) error {
 
 // Pull pulls changes from the specified remote and branch
 func (g *GitRepo) Pull(remote, branch string) error {
-	_, err := g.execGitCommand("pull", remote, branch)
+	output, err := g.execGitCommand("pull", remote, branch)
 	if err != nil {
-		return fmt.Errorf("git pull failed: %w", err)
+		return fmt.Errorf("git pull failed: %w\n%s", err, string(output))
 	}
 
 	return nil
@@ -152,7 +159,13 @@ func (g *GitRepo) CreateBranch(branch string) error {
 func (g *GitRepo) CurrentBranch() (string, error) {
 	output, err := g.execGitCommand("rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("failed to get current branch: %w", err)
+		output2, err2 := g.execGitCommand("branch")
+		if err2 != nil {
+			return "", err2
+		}
+		fmt.Println(string(output2))
+
+		return "", fmt.Errorf("failed to get current branch: %w (%v)", err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil
