@@ -1,4 +1,4 @@
-module github.com/ocuroot/git-lock-experiment
+module github.com/ocuroot/gittools
 
 go 1.19
 

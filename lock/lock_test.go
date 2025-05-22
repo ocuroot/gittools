@@ -1,4 +1,4 @@
-package gitlock
+package lock
 
 import (
 	"fmt"
@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/ocuroot/gittools"
 )
 
-func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*GitRepo, func()) {
+func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*gittools.GitRepo, func()) {
 	t.Helper()
 
 	// Create a temporary directory for the remote repository
@@ -18,7 +20,7 @@ func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*GitRepo, func()) {
 		t.Fatalf("Failed to create local temp directory: %v", err)
 	}
 
-	repo, err := Clone(fmt.Sprintf("file://%s", remoteDir), localDir)
+	repo, err := gittools.Clone(fmt.Sprintf("file://%s", remoteDir), localDir)
 	if err != nil {
 		os.RemoveAll(localDir)
 		t.Fatalf("Failed to clone remote repository: %v", err)
@@ -148,7 +150,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	localDir, _, cleanup := setupRemoteTestRepo(t)
 	defer cleanup()
 
-	repo, err := New(localDir)
+	repo, err := gittools.New(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create GitRepo: %v", err)
 	}
@@ -167,7 +169,8 @@ func TestLockAcquireRelease(t *testing.T) {
 	// Debug lock file path
 	t.Logf("Lock file path: %s", absLockPath)
 
-	err = repo.AcquireLock(lockPath, 10*time.Minute, "Test lock")
+	locking := NewRepoLocking(repo)
+	err = locking.AcquireLock(lockPath, 10*time.Minute, "Test lock")
 	if err != nil {
 		t.Fatalf("Failed to acquire lock: %v", err)
 	}
@@ -180,28 +183,23 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock exists
-	lock, err := repo.ReadLock(lockPath)
+	lock, err := locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock: %v", err)
 	}
 
 	// Check if we own the lock
-	ownsLock, err := repo.OwnsLock(lock)
+	ownsLock, err := locking.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership: %v", err)
 	}
-
-	// Add debug output to diagnose the issue
-	t.Logf("Owns lock: %v", ownsLock)
-	t.Logf("Lock: %+v", lock)
-	t.Logf("Repo LockKey: %s", repo.LockKey)
 
 	if lock == nil {
 		t.Fatalf("Expected lock object to be returned, got nil")
 	}
 
-	if lock.Owner != repo.LockKey {
-		t.Errorf("Expected lock owner to be %s, got %s", repo.LockKey, lock.Owner)
+	if lock.Owner != locking.LockKey {
+		t.Errorf("Expected lock owner to be %s, got %s", locking.LockKey, lock.Owner)
 	}
 
 	if !ownsLock {
@@ -216,13 +214,13 @@ func TestLockAcquireRelease(t *testing.T) {
 	t.Logf("Original expiry: %v", originalExpiry)
 	newExpiry := originalExpiry.Add(20 * time.Minute)
 	t.Logf("New expiry: %v", newExpiry)
-	err = repo.RefreshLock(lockPath, newExpiry)
+	err = locking.RefreshLock(lockPath, newExpiry)
 	if err != nil {
 		t.Fatalf("Failed to refresh lock: %v", err)
 	}
 
 	// Check if the lock was refreshed
-	lock, err = repo.ReadLock(lockPath)
+	lock, err = locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock after refresh: %v", err)
 	}
@@ -232,13 +230,13 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Test releasing the lock
-	err = repo.ReleaseLock(lockPath)
+	err = locking.ReleaseLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to release lock: %v", err)
 	}
 
 	// Check if the lock was released
-	lock, err = repo.ReadLock(lockPath)
+	lock, err = locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock after release: %v", err)
 	}

@@ -1,4 +1,4 @@
-package gitlock
+package lock
 
 import (
 	"errors"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ocuroot/gittools"
 )
 
 // TestPushRetryWithRebase tests the rebase retry functionality when non-conflicting concurrent changes occur
@@ -85,10 +87,12 @@ func TestPushRetryWithRebase(t *testing.T) {
 
 	// Make sure no rebase is in progress
 	// This can happen if the test was interrupted
-	_, _, _ = repo2.execGitCommand("rebase", "--abort")
-	
+	if err := repo2.RebaseAbort(); err != nil {
+		t.Fatalf("Failed to abort rebase in repo2: %v", err)
+	}
+
 	// Now repo2 tries to push, which should use our retry mechanism with rebase
-	pushErr := repo2.pushWithRetry("main")
+	pushErr := repo2.Push("origin", "main")
 
 	// With non-conflicting changes to different files, the push should succeed after rebase
 	if pushErr != nil {
@@ -103,27 +107,27 @@ func TestPushRetryWithRebase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to pull latest changes in repo1: %v", err)
 	}
-	
+
 	// Verify that both files exist with the right content
 	// Check file1
 	finalContent1, err := os.ReadFile(testFilePath1)
 	if err != nil {
 		t.Fatalf("Failed to read final file1 content: %v", err)
 	}
-	
+
 	expectedContent1 := "Initial content from repo1\nUpdated content in file1\n"
 	if string(finalContent1) != expectedContent1 {
 		t.Errorf("File1 content incorrect. Expected:\n%s\nGot:\n%s", expectedContent1, finalContent1)
 	} else {
 		t.Log("File1 has correct content after rebase and push")
 	}
-	
+
 	// Now check for file2
 	finalContent2, err := os.ReadFile(filepath.Join(repo1.RepoPath, testFile2))
 	if err != nil {
 		t.Fatalf("Failed to read final file2 content: %v", err)
 	}
-	
+
 	expectedContent2 := "New content in file2 from repo2\n"
 	if string(finalContent2) != expectedContent2 {
 		t.Errorf("File2 content incorrect. Expected:\n%s\nGot:\n%s", expectedContent2, finalContent2)
@@ -135,19 +139,19 @@ func TestPushRetryWithRebase(t *testing.T) {
 // TestRebaseMergeConflict tests that merge conflicts during rebase are properly detected
 func TestRebaseMergeConflict(t *testing.T) {
 	t.Parallel()
-	
+
 	// Set up a remote repository and two local clones
 	_, remoteDir, cleanupRemote := setupRemoteTestRepo(t)
 	defer cleanupRemote()
-	
+
 	// Clone repo1
 	repo1, cleanup1 := checkoutRemoteTestRepo(t, remoteDir)
 	defer cleanup1()
-	
+
 	// Clone repo2
 	repo2, cleanup2 := checkoutRemoteTestRepo(t, remoteDir)
 	defer cleanup2()
-	
+
 	// Create a test file in repo1 and push it
 	testFile := "conflict-file.txt"
 	testFilePath1 := filepath.Join(repo1.RepoPath, testFile)
@@ -155,88 +159,88 @@ func TestRebaseMergeConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to write test file in repo1: %v", err)
 	}
-	
+
 	// Commit and push from repo1
 	err = repo1.Commit("Add test file from repo1", []string{testFile})
 	if err != nil {
 		t.Fatalf("Failed to commit in repo1: %v", err)
 	}
-	
+
 	err = repo1.Push("origin", "main")
 	if err != nil {
 		t.Fatalf("Failed to push from repo1: %v", err)
 	}
-	
+
 	// Now repo2 creates a conflicting change
 	// First, it should pull the latest changes to have the test file
 	err = repo2.Pull("origin", "main")
 	if err != nil {
 		t.Fatalf("Failed to pull in repo2: %v", err)
 	}
-	
+
 	// Now modify the same file in repo2, changing line 2
 	testFilePath2 := filepath.Join(repo2.RepoPath, testFile)
 	err = os.WriteFile(testFilePath2, []byte("Line 1\nModified Line 2 from repo2\nLine 3\n"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to write test file in repo2: %v", err)
 	}
-	
+
 	// Commit in repo2
 	err = repo2.Commit("Update test file from repo2", []string{testFile})
 	if err != nil {
 		t.Fatalf("Failed to commit in repo2: %v", err)
 	}
-	
+
 	// Meanwhile, repo1 modifies the same line and pushes it
 	err = os.WriteFile(testFilePath1, []byte("Line 1\nModified Line 2 from repo1\nLine 3\n"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to update test file in repo1: %v", err)
 	}
-	
+
 	// Commit and push from repo1 again
 	err = repo1.Commit("Update test file from repo1", []string{testFile})
 	if err != nil {
 		t.Fatalf("Failed to commit update in repo1: %v", err)
 	}
-	
+
 	err = repo1.Push("origin", "main")
 	if err != nil {
 		t.Fatalf("Failed to push update from repo1: %v", err)
 	}
-	
+
 	// Now try to rebase repo2 onto origin/main, which should cause a merge conflict
 	// But first make sure we use the execGitCommand to capture the exact output parsing
 	// Our test might not be triggering the exact condition we want to test
-	
+
 	// For now, let's directly test the error parsing logic by simulating a rebase conflict output
 	simulateMergeConflictOutput := "Auto-merging conflict-file.txt\nCONFLICT (content): Merge conflict in conflict-file.txt\n"
-	
+
 	// Mock the error by calling our error parsing code directly
-	err = fmt.Errorf("%w: %s", ErrRebaseMergeConflict, simulateMergeConflictOutput)
-	
+	err = fmt.Errorf("%w: %s", gittools.ErrRebaseMergeConflict, simulateMergeConflictOutput)
+
 	// Check that errors.Is works with our error wrapping
-	if !errors.Is(err, ErrRebaseMergeConflict) {
+	if !errors.Is(err, gittools.ErrRebaseMergeConflict) {
 		t.Errorf("Error wrapping failed - expected ErrRebaseMergeConflict to be detected")
 	} else {
 		t.Log("Successfully verified error wrapping for ErrRebaseMergeConflict")
 	}
-	
+
 	// Clean up the rebase state
-	_, _, _ = repo2.execGitCommand("rebase", "--abort")
+	_ = repo2.RebaseAbort()
 }
 
 // TestRebaseAlreadyInProgress tests detection of an already-in-progress rebase
 func TestRebaseAlreadyInProgress(t *testing.T) {
 	t.Parallel()
-	
+
 	// Set up a test repository
 	_, remoteDir, cleanupRemote := setupRemoteTestRepo(t)
 	defer cleanupRemote()
-	
+
 	// Clone repo
 	repo, cleanup := checkoutRemoteTestRepo(t, remoteDir)
 	defer cleanup()
-	
+
 	// Create a test file and commit it
 	testFile := "rebase-progress-file.txt"
 	testFilePath := filepath.Join(repo.RepoPath, testFile)
@@ -244,43 +248,43 @@ func TestRebaseAlreadyInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
-	
+
 	// Commit and push
 	err = repo.Commit("Add test file", []string{testFile})
 	if err != nil {
 		t.Fatalf("Failed to commit: %v", err)
 	}
-	
+
 	err = repo.Push("origin", "main")
 	if err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
-	
+
 	// Update the file and commit again
 	err = os.WriteFile(testFilePath, []byte("Initial content\nSecond line\n"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to update test file: %v", err)
 	}
-	
+
 	err = repo.Commit("Update test file", []string{testFile})
 	if err != nil {
 		t.Fatalf("Failed to commit update: %v", err)
 	}
-	
+
 	// Test the error parsing logic by simulating a rebase-in-progress error output
 	// This directly tests our error detection logic without relying on Git behavior
 	simulateRebaseInProgressOutput := "fatal: It seems that there is already a rebase-merge directory, and\nI wonder if you are in the middle of another rebase.  If that is the\ncase, please try\n\tgit rebase (--continue | --abort | --skip)\n"
-	
+
 	// Mock the error
-	err = fmt.Errorf("%w: %s", ErrRebaseAlreadyInProgress, simulateRebaseInProgressOutput)
-	
+	err = fmt.Errorf("%w: %s", gittools.ErrRebaseAlreadyInProgress, simulateRebaseInProgressOutput)
+
 	// Check that errors.Is works with our error wrapping
-	if !errors.Is(err, ErrRebaseAlreadyInProgress) {
+	if !errors.Is(err, gittools.ErrRebaseAlreadyInProgress) {
 		t.Errorf("Error wrapping failed - expected ErrRebaseAlreadyInProgress to be detected")
 	} else {
 		t.Log("Successfully verified error wrapping for ErrRebaseAlreadyInProgress")
 	}
-	
+
 	// Clean up the rebase state
-	_, _, _ = repo.execGitCommand("rebase", "--abort")
+	_ = repo.RebaseAbort()
 }

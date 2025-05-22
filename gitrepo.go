@@ -1,4 +1,4 @@
-package gitlock
+package gittools
 
 import (
 	"bytes"
@@ -8,13 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/oklog/ulid/v2"
 )
-
-// ErrLockConflict is returned when a lock acquisition fails due to the resource being locked
-var ErrLockConflict = errors.New("lock conflict: resource is already locked")
 
 // Git push error types
 var (
@@ -49,17 +43,6 @@ var (
 // GitRepo represents a Git repository with locking capabilities
 type GitRepo struct {
 	RepoPath string
-	LockKey  string // ULID for identifying this process
-
-	now func() time.Time
-}
-
-// Lock represents a lock on a resource
-type Lock struct {
-	Owner       string    `json:"owner"` // ULID of the process holding the lock
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	Description string    `json:"description,omitempty"`
 }
 
 // New creates a GitRepo instance from an existing repository
@@ -74,15 +57,8 @@ func New(repoPath string) (*GitRepo, error) {
 		return nil, fmt.Errorf("not a git repository: %s", absPath)
 	}
 
-	// Generate a ULID for this instance
-	id := ulid.Make().String()
-
 	return &GitRepo{
 		RepoPath: absPath,
-		LockKey:  id,
-		now: func() time.Time {
-			return time.Now()
-		},
 	}, nil
 }
 
@@ -106,15 +82,8 @@ func Clone(url, destination string) (*GitRepo, error) {
 		return nil, fmt.Errorf("failed to checkout main branch: %s: %w", output, err)
 	}
 
-	// Generate a ULID for this instance
-	id := ulid.Make().String()
-
 	return &GitRepo{
 		RepoPath: absPath,
-		LockKey:  id,
-		now: func() time.Time {
-			return time.Now()
-		},
 	}, nil
 }
 
@@ -335,4 +304,14 @@ func (g *GitRepo) CurrentBranch() (string, error) {
 	}
 
 	return strings.TrimSpace(string(stdout)), nil
+}
+
+func (g *GitRepo) RebaseAbort() error {
+	stdout, stderr, err := g.execGitCommand("rebase", "--abort")
+	if err != nil {
+		return fmt.Errorf("git rebase abort failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+
+	return nil
 }

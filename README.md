@@ -1,79 +1,141 @@
-# Git Lock Experiment
+# gittools
 
-An experiment for managing distributed locks using Git repositories and merge conflicts to detect collision.
+[![GoDoc](https://pkg.go.dev/badge/github.com/ocuroot/gittools)](https://pkg.go.dev/github.com/ocuroot/gittools)
 
-## Concept
+A Go module providing a wrapper around the local git command with a few additional utilities.
 
-This experiment explores the idea of using Git's merge conflict detection as a distributed locking mechanism. The core concept is:
+This module is primarily intended to be used in the Ocuroot project, so the future direction will be heavily dependant on the needs of that project.
+Open sourcing in case it's useful to others as a library or examples.
+
+## Installation
+
+```bash
+go get github.com/ocuroot/gittools
+```
+
+## Core Components
+
+### GitRepo
+
+The `GitRepo` struct provides a high-level interface to Git operations:
+
+```go
+// Initialize a new repository
+repo, err := gittools.Init("/path/to/repo", gittools.GitInitOptions{
+    DefaultBranch: "main",
+})
+
+// Or open an existing repository
+repo, err := gittools.New("/path/to/existing/repo")
+
+// Basic Git operations
+err = repo.Add("file.txt")
+err = repo.SimpleCommit("Add new file")
+err = repo.Push("origin", "main")
+```
+
+### RepoLocks
+
+The distributed locking system uses Git's conflict detection as a locking mechanism:
 
 1. Locks are represented as files in a Git repository
-2. Attempting to acquire a lock means creating or modifying a lock file in a branch and opening a PR
-3. If the PR has conflicts, someone else has the lock (conflict detected)
-4. If the PR has no conflicts, you've successfully acquired the lock
-5. Releasing a lock means deleting the lock file and merging the PR
+2. Acquiring a lock creates or modifies a lock file
+3. Git merge conflicts indicate lock contention
+4. Locks can have expiration times and metadata
+5. Lock history is preserved in Git commit history
 
-## Use Cases
+## Usage Examples
 
-- Distributed resource locking without a dedicated locking service
-- Coordination between CI/CD systems
-- Simple mutex implementation for shared resources
-- Transparent lock history via Git commit history
+### Managing Git Repositories
 
-## How to Use
+```go
+package main
 
-The repository includes three utility scripts:
+import (
+    "fmt"
+    "github.com/ocuroot/gittools"
+)
 
-### Acquiring a Lock
-
-```bash
-./lock.sh <resource_id> [description]
+func main() {
+    // Clone a repository
+    repo, err := gittools.Clone("https://github.com/example/repo.git", "./local-repo")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create a new branch
+    err = repo.CreateBranch("feature-branch")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Checkout the branch
+    err = repo.Checkout("feature-branch")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Make changes and commit
+    err = repo.SimpleCommit("Update documentation")
+    if err != nil {
+        panic(err)
+    }
+}
 ```
 
-This script:
-- Creates a new branch for the lock operation
-- Creates or updates a lock file for the resource
-- Pushes the branch and outputs instructions to create a PR
+### Distributed Locking
 
-### Releasing a Lock
+```go
+package main
 
-```bash
-./unlock.sh <resource_id>
+import (
+    "fmt"
+    "time"
+    "github.com/ocuroot/gittools"
+)
+
+func main() {
+    // Open existing repository
+    repo, err := gittools.New("./shared-repo")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create a locks manager
+    locks := gittools.NewRepoLocks(repo)
+    
+    // Try to acquire a lock with 10-minute expiration
+    lockPath := "resources/database-migration.lock"
+    err = locks.AcquireLock(lockPath, 10*time.Minute, "Running schema migration")
+    if err != nil {
+        fmt.Println("Resource is locked by another process")
+        return
+    }
+    
+    // Do work while holding the lock
+    fmt.Println("Lock acquired, performing work...")
+    
+    // When done, release the lock
+    err = locks.ReleaseLock(lockPath)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println("Lock released")
+}
 ```
-
-This script:
-- Creates a branch for releasing the lock
-- Removes the lock file
-- Pushes the branch and outputs instructions to create a PR
-
-### Checking Lock Status
-
-```bash
-./check-locks.sh
-```
-
-This script outputs information about all current locks and pending lock operations.
 
 ## Lock File Format
 
-Lock files are stored in the `locks/` directory with the naming convention `<resource_id>.lock`. Each lock file contains JSON-formatted metadata including:
+Lock files can be stored as any file in the repository. Each lock file contains JSON-formatted metadata including:
 
-- Owner information
+- Owner information (a ULID to identify a particular process)
 - Creation timestamp
 - Expiration timestamp
 - Custom metadata
 
-See the README in the `locks/` directory for more details.
-
 ## Limitations
 
-- This approach works best for low-contention resources
-- Lock acquisition is not immediate (depends on PR creation time)
-- Requires manual PR creation and merging (could be automated with GitHub Actions)
-- No automatic expiration (though the locks include expiry timestamps)
-
-## Future Improvements
-
-- Add GitHub Actions to automate PR creation and merging
-- Implement automatic lock expiration
-- Add validation for lock file format
-- Create a simple CLI tool to manage locks programmatically
+- **Not yet comprehensive**: This won't provide access to all git features, but it's a start.
+- **Performance**: This isn't designed for high-contention scenarios. If you need thousands of locks per second, you'll want a dedicated locking service.
+- **Latency**: Lock acquisition depends on Git operations, which adds some overhead compared to in-memory locks.
+- **Expiration Handling**: Lock expiration is tracked but not automatically enforced - you'll need to implement cleanup for stale locks.

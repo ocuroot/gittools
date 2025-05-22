@@ -1,4 +1,4 @@
-package gitlock
+package gittools
 
 import (
 	"os"
@@ -85,10 +85,6 @@ func TestNew(t *testing.T) {
 	if repo.RepoPath != tempDir {
 		t.Errorf("Expected RepoPath to be %s, got %s", tempDir, repo.RepoPath)
 	}
-
-	if repo.LockKey == "" {
-		t.Errorf("Expected LockKey to be set, got empty string")
-	}
 }
 
 func TestBasicGitOperations(t *testing.T) {
@@ -115,7 +111,7 @@ func TestBasicGitOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get current branch: %v", err)
 	}
-	
+
 	if branch != "test-branch" {
 		t.Errorf("Expected current branch to be 'test-branch', got '%s'", branch)
 	}
@@ -129,7 +125,7 @@ func TestBasicGitOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get current branch: %v", err)
 	}
-	
+
 	if branch != "main" {
 		t.Errorf("Expected current branch to be 'main', got '%s'", branch)
 	}

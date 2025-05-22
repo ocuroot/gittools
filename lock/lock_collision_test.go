@@ -1,4 +1,4 @@
-package gitlock
+package lock
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cloudflare/backoff"
+	"github.com/ocuroot/gittools"
 )
 
 // TestLockCollision tests the lock collision detection and timeout functionality
@@ -20,22 +21,25 @@ func TestLockCollision(t *testing.T) {
 
 	// Create two separate repos pointing to the same directory
 	// to simulate two different processes
-	repo1, err := New(localDir)
+	repo1, err := gittools.New(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create first GitRepo: %v", err)
 	}
 
-	repo2, err := New(localDir)
+	repo2, err := gittools.New(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create second GitRepo: %v", err)
 	}
 
+	repo1Locking := NewRepoLocking(repo1)
+	repo2Locking := NewRepoLocking(repo2)
+
 	// Verify the repos have different lock keys
-	if repo1.LockKey == repo2.LockKey {
-		t.Fatalf("Expected different lock keys for the two repos, but they match: %s", repo1.LockKey)
+	if repo1Locking.LockKey == repo2Locking.LockKey {
+		t.Fatalf("Expected different lock keys for the two repos, but they match: %s", repo1Locking.LockKey)
 	}
-	t.Logf("Repo1 lock key: %s", repo1.LockKey)
-	t.Logf("Repo2 lock key: %s", repo2.LockKey)
+	t.Logf("Repo1 lock key: %s", repo1Locking.LockKey)
+	t.Logf("Repo2 lock key: %s", repo2Locking.LockKey)
 
 	// Ensure the locks directory exists
 	lockPath := "locks/test-resource.lock"
@@ -45,19 +49,19 @@ func TestLockCollision(t *testing.T) {
 	}
 
 	// Have repo1 acquire the lock
-	err = repo1.AcquireLock(lockPath, 10*time.Minute, "Test lock from repo1")
+	err = repo1Locking.AcquireLock(lockPath, 10*time.Minute, "Test lock from repo1")
 	if err != nil {
 		t.Fatalf("Failed to acquire lock with repo1: %v", err)
 	}
 	t.Log("Repo1 successfully acquired the lock")
 
 	// Verify repo1 holds the lock
-	lock, err := repo1.ReadLock(lockPath)
+	lock, err := repo1Locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock with repo1: %v", err)
 	}
 
-	ownsLock, err := repo1.OwnsLock(lock)
+	ownsLock, err := repo1Locking.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership with repo1: %v", err)
 	}
@@ -74,7 +78,7 @@ func TestLockCollision(t *testing.T) {
 	// Now try to acquire the same lock with repo2 with a very short timeout
 	// This should fail with a timeout error
 	start := time.Now()
-	err = repo2.AcquireLock(lockPath, 10*time.Minute, "Test lock from repo2")
+	err = repo2Locking.AcquireLock(lockPath, 10*time.Minute, "Test lock from repo2")
 	elapsed := time.Since(start)
 
 	// Check that we got the expected error
@@ -88,14 +92,14 @@ func TestLockCollision(t *testing.T) {
 	t.Logf("Lock acquisition attempt took %v", elapsed)
 
 	// Now have repo1 release the lock
-	err = repo1.ReleaseLock(lockPath)
+	err = repo1Locking.ReleaseLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to release lock: %v", err)
 	}
 	t.Log("Repo1 released the lock")
 
 	// Now repo2 should be able to acquire the lock
-	err = repo2.AcquireLock(lockPath, 10*time.Minute, "Test lock from repo2 after release")
+	err = repo2Locking.AcquireLock(lockPath, 10*time.Minute, "Test lock from repo2 after release")
 	if err != nil {
 		t.Errorf("Failed to acquire lock with repo2 after release: %v", err)
 	} else {
@@ -103,12 +107,12 @@ func TestLockCollision(t *testing.T) {
 	}
 
 	// Verify repo2 holds the lock
-	lock, err = repo2.ReadLock(lockPath)
+	lock, err = repo2Locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock with repo2: %v", err)
 	}
 
-	ownsLock, err = repo2.OwnsLock(lock)
+	ownsLock, err = repo2Locking.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership with repo2: %v", err)
 	}
@@ -119,8 +123,8 @@ func TestLockCollision(t *testing.T) {
 	if lock == nil {
 		t.Fatalf("Expected lock object to be returned for repo2, got nil")
 	}
-	if lock.Owner != repo2.LockKey {
-		t.Errorf("Expected lock owner to be %s, got %s", repo2.LockKey, lock.Owner)
+	if lock.Owner != repo2Locking.LockKey {
+		t.Errorf("Expected lock owner to be %s, got %s", repo2Locking.LockKey, lock.Owner)
 	}
 	t.Logf("Lock now owned by: %s", lock.Owner)
 	t.Logf("Lock description: %s", lock.Description)
@@ -161,7 +165,9 @@ func TestLockConcurrentWork(t *testing.T) {
 		repo, cleanup := checkoutRemoteTestRepo(t, remoteDir)
 		defer cleanup()
 
-		go func(repo *GitRepo, i int) {
+		locking := NewRepoLocking(repo)
+
+		go func(locking *Locking, i int) {
 			defer wg.Done()
 
 			var hasLock bool
@@ -174,7 +180,7 @@ func TestLockConcurrentWork(t *testing.T) {
 
 			// Try until maxTries is reached
 			for tries := 0; tries < maxTries; tries++ {
-				err := repo.AcquireLock(lockPath, 10*time.Minute, fmt.Sprintf("Test lock from repo %d", i))
+				err := locking.AcquireLock(lockPath, 10*time.Minute, fmt.Sprintf("Test lock from repo %d", i))
 				if err != nil {
 					// Record the error
 					errors = append(errors, err.Error())
@@ -209,12 +215,12 @@ func TestLockConcurrentWork(t *testing.T) {
 			workingCount--
 
 			// Release the lock
-			err := repo.ReleaseLock(lockPath)
+			err := locking.ReleaseLock(lockPath)
 			if err != nil {
 				t.Errorf("Repo %d - Failed to release lock: %v", i, err)
 				return
 			}
-		}(repo, i)
+		}(locking, i)
 	}
 	wg.Wait()
 

@@ -1,9 +1,10 @@
-package gitlock
+package lock
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/ocuroot/gittools"
 )
 
 func TestLockExpiration(t *testing.T) {
@@ -11,7 +12,7 @@ func TestLockExpiration(t *testing.T) {
 	localDir, _, cleanup := setupRemoteTestRepo(t)
 	defer cleanup()
 
-	repo, err := New(localDir)
+	repo, err := gittools.New(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create GitRepo: %v", err)
 	}
@@ -20,22 +21,24 @@ func TestLockExpiration(t *testing.T) {
 	lockPath := "locks/expiring-resource.lock"
 	expiration := 10 * time.Minute
 
+	locking := NewRepoLocking(repo)
+
 	// Define a fixed base time for testing
 	baseTime := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	// Set the initial time
-	repo.now = func() time.Time {
+	locking.now = func() time.Time {
 		return baseTime
 	}
 
 	// Acquire a lock with 10 minute expiration
-	err = repo.AcquireLock(lockPath, expiration, "Test expiring lock")
+	err = locking.AcquireLock(lockPath, expiration, "Test expiring lock")
 	if err != nil {
 		t.Fatalf("Failed to acquire lock: %v", err)
 	}
 
 	// Verify that the lock exists and we own it
-	lock, err := repo.ReadLock(lockPath)
+	lock, err := locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to read lock: %v", err)
 	}
@@ -43,7 +46,7 @@ func TestLockExpiration(t *testing.T) {
 		t.Fatal("Expected lock to exist, got nil")
 	}
 
-	ownsLock, err := repo.OwnsLock(lock)
+	ownsLock, err := locking.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership: %v", err)
 	}
@@ -52,12 +55,12 @@ func TestLockExpiration(t *testing.T) {
 	}
 
 	// Set time to just before expiration (9 minutes 59 seconds after lock creation)
-	repo.now = func() time.Time {
+	locking.now = func() time.Time {
 		return baseTime.Add(expiration - time.Second)
 	}
 
 	// Verify lock is still valid just before expiration
-	lock, err = repo.ReadLock(lockPath)
+	lock, err = locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to read lock just before expiration: %v", err)
 	}
@@ -66,12 +69,12 @@ func TestLockExpiration(t *testing.T) {
 	}
 
 	// Set time to after expiration (10 minutes and 1 second after lock creation)
-	repo.now = func() time.Time {
+	locking.now = func() time.Time {
 		return baseTime.Add(expiration + time.Second)
 	}
 
 	// Verify lock is now invalid
-	lock, err = repo.ReadLock(lockPath)
+	lock, err = locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to read lock after expiration: %v", err)
 	}
@@ -79,21 +82,15 @@ func TestLockExpiration(t *testing.T) {
 		t.Fatal("Expected lock to be invalid after expiration, but it was still valid")
 	}
 
-	// Verify file still exists on disk even though lock is logically expired
-	lockFileFull := filepath.Join(localDir, lockPath)
-	if _, _, err := repo.execGitCommand("ls-files", "--", lockFileFull); err != nil {
-		t.Fatal("Lock file should still exist on disk even after expiration")
-	}
-
 	// Test that we can acquire a new lock after the previous one expired
 	// Reset time to "now" (after expiration)
-	err = repo.AcquireLock(lockPath, expiration, "New lock after expiration")
+	err = locking.AcquireLock(lockPath, expiration, "New lock after expiration")
 	if err != nil {
 		t.Fatalf("Failed to acquire new lock after previous one expired: %v", err)
 	}
 
 	// Verify that the new lock exists and we own it
-	lock, err = repo.ReadLock(lockPath)
+	lock, err = locking.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to read new lock: %v", err)
 	}
