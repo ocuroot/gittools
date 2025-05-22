@@ -38,10 +38,10 @@ var (
 var (
 	// ErrRebaseMergeConflict is returned when a rebase encounters merge conflicts
 	ErrRebaseMergeConflict = errors.New("git rebase failed: merge conflict")
-	
+
 	// ErrRebaseAlreadyInProgress is returned when attempting to rebase while another rebase is in progress
 	ErrRebaseAlreadyInProgress = errors.New("git rebase failed: rebase already in progress")
-	
+
 	// ErrRebaseNoCommitsApplied is returned when a rebase doesn't apply any commits
 	ErrRebaseNoCommitsApplied = errors.New("git rebase failed: no commits applied")
 )
@@ -50,6 +50,8 @@ var (
 type GitRepo struct {
 	RepoPath string
 	LockKey  string // ULID for identifying this process
+
+	now func() time.Time
 }
 
 // Lock represents a lock on a resource
@@ -78,6 +80,9 @@ func New(repoPath string) (*GitRepo, error) {
 	return &GitRepo{
 		RepoPath: absPath,
 		LockKey:  id,
+		now: func() time.Time {
+			return time.Now()
+		},
 	}, nil
 }
 
@@ -107,6 +112,9 @@ func Clone(url, destination string) (*GitRepo, error) {
 	return &GitRepo{
 		RepoPath: absPath,
 		LockKey:  id,
+		now: func() time.Time {
+			return time.Now()
+		},
 	}, nil
 }
 
@@ -291,17 +299,17 @@ func (g *GitRepo) Rebase(onto string) error {
 		stdoutStr := string(stdout)
 		stderrStr := string(stderr)
 		combinedOutput := stdoutStr + stderrStr
-		
+
 		switch {
 		case strings.Contains(combinedOutput, "CONFLICT") || strings.Contains(combinedOutput, "Merge conflict"):
 			return fmt.Errorf("%w: %s", ErrRebaseMergeConflict, combinedOutput)
-			
+
 		case strings.Contains(combinedOutput, "already in progress") || strings.Contains(combinedOutput, "rebase-merge directory"):
 			return fmt.Errorf("%w: %s", ErrRebaseAlreadyInProgress, combinedOutput)
-			
+
 		case strings.Contains(combinedOutput, "no commits applied"):
 			return fmt.Errorf("%w: %s", ErrRebaseNoCommitsApplied, combinedOutput)
-			
+
 		default:
 			return fmt.Errorf("git rebase failed: %w\nstdout: %s\nstderr: %s",
 				err, stdout, stderr)

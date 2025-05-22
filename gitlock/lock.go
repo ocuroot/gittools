@@ -27,7 +27,7 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 	}
 
 	// Check if lock already exists
-	existingLock, err := g.IsLocked(lockFilePath)
+	existingLock, err := g.ReadLock(lockFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to check lock status: %w", err)
 	}
@@ -52,8 +52,8 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 	// Create the lock object
 	lock := &Lock{
 		Owner:       g.LockKey,
-		CreatedAt:   time.Now(),
-		ExpiresAt:   time.Now().Add(expiryDuration),
+		CreatedAt:   g.now(),
+		ExpiresAt:   g.now().Add(expiryDuration),
 		Description: description,
 	}
 
@@ -82,7 +82,7 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 		// If push failed, clean up by removing the lock file and reset
 		_ = os.Remove(fullLockPath)
 		_ = g.ResetHard("HEAD~1")
-		
+
 		// Convert the push error to an appropriate lock error
 		switch {
 		case errors.Is(pushErr, ErrPushNonFastForward), errors.Is(pushErr, ErrPushRejected):
@@ -116,7 +116,7 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 		return fmt.Errorf("failed to pull latest changes: %w", err)
 	}
 
-	lock, err := g.IsLocked(lockFilePath)
+	lock, err := g.ReadLock(lockFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to check lock: %w", err)
 	}
@@ -127,7 +127,7 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
 	if !ownsLock {
-		lock, err := g.IsLocked(lockFilePath)
+		lock, err := g.ReadLock(lockFilePath)
 		if err != nil {
 			return fmt.Errorf("failed to check lock: %w", err)
 		}
@@ -163,7 +163,7 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 		if err := g.ResetHard("HEAD~1"); err != nil {
 			fmt.Printf("Warning: failed to reset after push error: %v\n", err)
 		}
-		
+
 		// Return a descriptive error
 		return fmt.Errorf("failed to push lock release: %w", pushErr)
 	}
@@ -207,7 +207,7 @@ func (g *GitRepo) pushWithRetry(branch string) error {
 				lastErr = rebaseErr
 				break
 			}
-			
+
 			// Continue to next retry attempt after rebase
 			continue
 		} else {
@@ -229,7 +229,7 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 	}
 
 	// Check if we're the owner of the lock
-	lock, err := g.IsLocked(lockFilePath)
+	lock, err := g.ReadLock(lockFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
@@ -295,7 +295,7 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 		if err := g.ResetHard("HEAD~1"); err != nil {
 			fmt.Printf("Warning: failed to reset after push error: %v\n", err)
 		}
-		
+
 		// Return a descriptive error
 		return fmt.Errorf("failed to push lock refresh: %w", pushErr)
 	}
@@ -303,11 +303,11 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 	return nil
 }
 
-// IsLocked checks if a resource is locked and returns the lock if it exists
+// ReadLock checks if a resource is locked and returns the lock if it exists
 // Returns:
 // - *Lock: the lock object if the resource is locked, nil otherwise
 // - error: any error that occurred
-func (g *GitRepo) IsLocked(lockFilePath string) (*Lock, error) {
+func (g *GitRepo) ReadLock(lockFilePath string) (*Lock, error) {
 	// Make sure we have latest changes (ignore errors in test environments)
 	err := g.Pull("origin", "main")
 	if err != nil {
@@ -336,7 +336,7 @@ func (g *GitRepo) IsLocked(lockFilePath string) (*Lock, error) {
 	}
 
 	// Check if the lock is expired
-	if time.Now().After(lock.ExpiresAt) {
+	if g.now().After(lock.ExpiresAt) {
 		// Lock is expired
 		return nil, nil
 	}

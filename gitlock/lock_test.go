@@ -180,7 +180,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock exists
-	lock, err := repo.IsLocked(lockPath)
+	lock, err := repo.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock was refreshed
-	lock, err = repo.IsLocked(lockPath)
+	lock, err = repo.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock after refresh: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if the lock was released
-	lock, err = repo.IsLocked(lockPath)
+	lock, err = repo.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock after release: %v", err)
 	}

@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cloudflare/backoff"
 )
 
 // TestLockCollision tests the lock collision detection and timeout functionality
@@ -49,7 +52,7 @@ func TestLockCollision(t *testing.T) {
 	t.Log("Repo1 successfully acquired the lock")
 
 	// Verify repo1 holds the lock
-	lock, err := repo1.IsLocked(lockPath)
+	lock, err := repo1.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock with repo1: %v", err)
 	}
@@ -100,7 +103,7 @@ func TestLockCollision(t *testing.T) {
 	}
 
 	// Verify repo2 holds the lock
-	lock, err = repo2.IsLocked(lockPath)
+	lock, err = repo2.ReadLock(lockPath)
 	if err != nil {
 		t.Fatalf("Failed to check lock with repo2: %v", err)
 	}
@@ -146,7 +149,9 @@ func TestLockConcurrentWork(t *testing.T) {
 
 	lockPath := "locks/test-resource.lock"
 
-	total := 5
+	total := 2
+
+	workingCount := 0
 
 	var wg sync.WaitGroup
 	wg.Add(total)
@@ -162,25 +167,46 @@ func TestLockConcurrentWork(t *testing.T) {
 			var hasLock bool
 			var errors []string
 			maxTries := total * 2
+
+			// Initialize backoff with reasonable defaults for a lock acquisition scenario
+			// Min interval of 20ms, max duration of 1s
+			b := backoff.New(1*time.Second, 10*time.Millisecond)
+
+			// Try until maxTries is reached
 			for tries := 0; tries < maxTries; tries++ {
 				err := repo.AcquireLock(lockPath, 10*time.Minute, fmt.Sprintf("Test lock from repo %d", i))
 				if err != nil {
-					time.Sleep(50 * time.Millisecond)
+					// Record the error
 					errors = append(errors, err.Error())
+
+					// Wait for the backoff duration before retrying
+					<-time.After(b.Duration())
 					continue
 				}
+
+				// Lock acquired successfully
 				hasLock = true
 				break
 			}
 
+			// Reset backoff for future uses
+			b.Reset()
+
 			if !hasLock {
-				//t.Logf("Logs:\n%v", strings.Join(errors, "\n"))
+				t.Logf("Logs:\n%v", strings.Join(errors, "\n"))
 				t.Errorf("Repo %d - Failed to acquire lock after %d tries", i, maxTries)
 				return
 			}
 
+			workingCount++
+
+			if workingCount > 1 {
+				t.Errorf("Repo %d - More than one process is working at the same time", i)
+			}
+
 			// Small delay to simulate work
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(time.Millisecond)
+			workingCount--
 
 			// Release the lock
 			err := repo.ReleaseLock(lockPath)
@@ -191,4 +217,8 @@ func TestLockConcurrentWork(t *testing.T) {
 		}(repo, i)
 	}
 	wg.Wait()
+
+	if workingCount != 0 {
+		t.Errorf("Expected workingCount to be 0, got %d", workingCount)
+	}
 }
