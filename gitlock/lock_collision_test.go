@@ -55,7 +55,7 @@ func TestLockCollision(t *testing.T) {
 		t.Fatalf("Failed to check lock with repo1: %v", err)
 	}
 
-	ownsLock, err := repo1.OwnsLock(lockPath)
+	ownsLock, err := repo1.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership with repo1: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestLockCollision(t *testing.T) {
 		t.Fatalf("Failed to check lock with repo2: %v", err)
 	}
 
-	ownsLock, err = repo2.OwnsLock(lockPath)
+	ownsLock, err = repo2.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership with repo2: %v", err)
 	}
@@ -162,10 +162,11 @@ func TestLockConcurrentWork(t *testing.T) {
 
 			var hasLock bool
 			var errors []string
-			for tries := 0; tries < total*10; tries++ {
+			maxTries := total * 2
+			for tries := 0; tries < maxTries; tries++ {
 				err := repo.AcquireLock(lockPath, 10*time.Minute, fmt.Sprintf("Test lock from repo %d", i))
 				if err != nil {
-					time.Sleep(100 * time.Millisecond)
+					time.Sleep(50 * time.Millisecond)
 					errors = append(errors, err.Error())
 					continue
 				}
@@ -175,12 +176,12 @@ func TestLockConcurrentWork(t *testing.T) {
 
 			if !hasLock {
 				t.Logf("Logs:\n%v", strings.Join(errors, "\n"))
-				t.Errorf("Repo %d - Failed to acquire lock after %d tries", i, total*10)
+				t.Errorf("Repo %d - Failed to acquire lock after %d tries", i, maxTries)
 				return
 			}
 
 			// Small delay to simulate work
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 
 			// Release the lock
 			err := repo.ReleaseLock(lockPath)

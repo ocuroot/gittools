@@ -127,9 +127,9 @@ func (g *GitRepo) Pull(remote, branch string) error {
 
 // Push pushes changes to the specified remote and branch
 func (g *GitRepo) Push(remote, branch string) error {
-	_, err := g.execGitCommand("push", remote, branch)
+	output, err := g.execGitCommand("push", "--porcelain", remote, branch)
 	if err != nil {
-		return fmt.Errorf("git push failed: %w", err)
+		return fmt.Errorf("git push failed: %w\n%s", err, string(output))
 	}
 
 	return nil

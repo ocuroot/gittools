@@ -32,7 +32,7 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 	}
 
 	// Check if we own the lock
-	ownsLock, err := g.OwnsLock(lockFilePath)
+	ownsLock, err := g.OwnsLock(existingLock)
 	if err != nil {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
@@ -77,7 +77,12 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 	// Try to push the lock
 	err = g.Push("origin", currentBranch)
 	if err != nil {
-		// Push failed, likely a conflict
+		// Reset to the state before our commit
+		_, resetErr := g.execGitCommand("reset", "--hard", "HEAD~1")
+		if resetErr != nil {
+			// Just log the reset error, still return the original conflict
+			fmt.Printf("Warning: failed to reset after push error: %v\n", resetErr)
+		}
 		return ErrLockConflict
 	}
 
@@ -92,13 +97,26 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 		return fmt.Errorf("failed to get current branch: %w", err)
 	}
 
+	if err := g.Pull("origin", currentBranch); err != nil {
+		return fmt.Errorf("failed to pull latest changes: %w", err)
+	}
+
+	lock, err := g.IsLocked(lockFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to check lock: %w", err)
+	}
+
 	// Check if we're the owner of the lock
-	ownsLock, err := g.OwnsLock(lockFilePath)
+	ownsLock, err := g.OwnsLock(lock)
 	if err != nil {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
 	if !ownsLock {
-		return fmt.Errorf("cannot release lock that is not owned by this process")
+		lock, err := g.IsLocked(lockFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to check lock: %w", err)
+		}
+		return fmt.Errorf("cannot release lock that is not owned by this process: lock owner %s", lock.Owner)
 	}
 
 	// Make sure we have latest changes
@@ -114,21 +132,18 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 	// Delete the lock file
 	lockFileFull := filepath.Join(g.RepoPath, lockFilePath)
 	if err := os.Remove(lockFileFull); err != nil {
-		_ = g.Checkout(currentBranch)
 		return fmt.Errorf("failed to remove lock file: %w", err)
 	}
 
 	// Commit the change
 	if err := g.Commit(fmt.Sprintf("Release lock for %s", lockFilePath), []string{lockFilePath}); err != nil {
-		_ = g.Checkout(currentBranch)
 		return fmt.Errorf("failed to commit lock release: %w", err)
 	}
 
-	// Push the branch (ignore errors in test environments)
-	_ = g.Push("origin", currentBranch)
-
-	// Restore original branch
-	_ = g.Checkout(currentBranch)
+	// Push the branch
+	if err := g.Push("origin", currentBranch); err != nil {
+		return fmt.Errorf("failed to push lock release: %w", err)
+	}
 
 	return nil
 }
@@ -147,7 +162,7 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
 
-	ownsLock, err := g.OwnsLock(lockFilePath)
+	ownsLock, err := g.OwnsLock(lock)
 	if err != nil {
 		return fmt.Errorf("failed to check lock ownership: %w", err)
 	}
@@ -207,7 +222,10 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 // - error: any error that occurred
 func (g *GitRepo) IsLocked(lockFilePath string) (*Lock, error) {
 	// Make sure we have latest changes (ignore errors in test environments)
-	_ = g.Fetch("origin")
+	err := g.Pull("origin", "main")
+	if err != nil {
+		return nil, fmt.Errorf("failed to pull latest changes: %w", err)
+	}
 
 	// Ensure lock directory exists first (added for tests)
 	lockDir := filepath.Dir(filepath.Join(g.RepoPath, lockFilePath))
@@ -243,10 +261,9 @@ func (g *GitRepo) IsLocked(lockFilePath string) (*Lock, error) {
 // Returns:
 // - bool: true if this repo owns the lock, false otherwise
 // - error: any error that occurred
-func (g *GitRepo) OwnsLock(lockFilePath string) (bool, error) {
-	lock, err := g.IsLocked(lockFilePath)
-	if err != nil {
-		return false, err
+func (g *GitRepo) OwnsLock(lock *Lock) (bool, error) {
+	if lock == nil {
+		return false, nil
 	}
 
 	if lock == nil {

@@ -186,7 +186,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	}
 
 	// Check if we own the lock
-	ownsLock, err := repo.OwnsLock(lockPath)
+	ownsLock, err := repo.OwnsLock(lock)
 	if err != nil {
 		t.Fatalf("Failed to check lock ownership: %v", err)
 	}
