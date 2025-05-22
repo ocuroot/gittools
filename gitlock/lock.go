@@ -2,6 +2,7 @@ package gitlock
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,16 +75,30 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 		return fmt.Errorf("failed to commit lock file: %w", err)
 	}
 
-	// Try to push the lock
-	err = g.Push("origin", currentBranch)
-	if err != nil {
-		// Reset to the state before our commit
-		_, resetErr := g.execGitCommand("reset", "--hard", "HEAD~1")
-		if resetErr != nil {
-			// Just log the reset error, still return the original conflict
-			fmt.Printf("Warning: failed to reset after push error: %v\n", resetErr)
+	// Try to push the lock with retries for conflicts
+	pushErr := g.pushWithRetry(currentBranch)
+
+	if pushErr != nil {
+		// If push failed, clean up by removing the lock file and reset
+		_ = os.Remove(fullLockPath)
+		_ = g.ResetHard("HEAD~1")
+		
+		// Convert the push error to an appropriate lock error
+		switch {
+		case errors.Is(pushErr, ErrPushNonFastForward), errors.Is(pushErr, ErrPushRejected):
+			// These errors typically mean someone else has pushed changes
+			return ErrLockConflict
+		case errors.Is(pushErr, ErrRebaseMergeConflict):
+			// Rebase merge conflict means lock contention
+			return ErrLockConflict
+		case errors.Is(pushErr, ErrPushPermissionDenied):
+			return fmt.Errorf("lock acquisition failed due to permission issues: %w", pushErr)
+		case errors.Is(pushErr, ErrPushRemoteRefMissing):
+			return fmt.Errorf("lock acquisition failed due to missing remote reference: %w", pushErr)
+		default:
+			// For any other errors, return a lock conflict
+			return ErrLockConflict
 		}
-		return ErrLockConflict
 	}
 
 	return nil
@@ -140,12 +155,69 @@ func (g *GitRepo) ReleaseLock(lockFilePath string) error {
 		return fmt.Errorf("failed to commit lock release: %w", err)
 	}
 
-	// Push the branch
-	if err := g.Push("origin", currentBranch); err != nil {
-		return fmt.Errorf("failed to push lock release: %w", err)
+	// Push the branch with retries
+	pushErr := g.pushWithRetry(currentBranch)
+
+	if pushErr != nil {
+		// If push failed, revert our change by restoring the lock file and reset
+		if err := g.ResetHard("HEAD~1"); err != nil {
+			fmt.Printf("Warning: failed to reset after push error: %v\n", err)
+		}
+		
+		// Return a descriptive error
+		return fmt.Errorf("failed to push lock release: %w", pushErr)
 	}
 
 	return nil
+}
+
+// pushWithRetry attempts to push to origin with retry logic using Git rebase
+// for handling non-fast-forward conflicts
+func (g *GitRepo) pushWithRetry(branch string) error {
+	const maxRetries = 2
+	var lastErr error
+
+	for retry := 0; retry <= maxRetries; retry++ {
+		// Try to push
+		lastErr = g.Push("origin", branch)
+		if lastErr == nil {
+			// Push succeeded
+			return nil
+		}
+
+		// Only retry for non-fast-forward or fetch-first errors
+		if retry < maxRetries && (errors.Is(lastErr, ErrPushNonFastForward) || errors.Is(lastErr, ErrPushFetchFirst)) {
+			// First fetch the latest changes
+			fetchErr := g.Fetch("origin")
+			if fetchErr != nil {
+				// Failed to fetch, continue to next retry attempt
+				continue
+			}
+
+			// Make sure we're not in a rebase already
+			_, _, _ = g.execGitCommand("rebase", "--abort")
+
+			// Try to rebase our changes on top of the remote
+			rebaseErr := g.Rebase("refs/remotes/origin/" + branch)
+			if rebaseErr != nil {
+				// If rebase fails for any reason, abort it and stop retrying
+				_, _, _ = g.execGitCommand("rebase", "--abort")
+				// For a locking mechanism, a rebase failure indicates true contention
+				// Set the last error to the rebase error and break out completely
+				lastErr = rebaseErr
+				break
+			}
+			
+			// Continue to next retry attempt after rebase
+			continue
+		} else {
+			// For any other errors, stop trying
+			break
+		}
+	}
+
+	// If we've reached here, the push failed after all retries
+	return lastErr
 }
 
 // RefreshLock refreshes a lock by updating its expiry time
@@ -186,6 +258,14 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 		return fmt.Errorf("failed to pull latest changes: %w", err)
 	}
 
+	// Read the original lock content first so we can restore it if needed
+	lockFileFull := filepath.Join(g.RepoPath, lockFilePath)
+	originalLockContent, err := os.ReadFile(lockFileFull)
+	if err != nil {
+		_ = g.Checkout(currentBranch)
+		return fmt.Errorf("failed to read original lock file: %w", err)
+	}
+
 	// Update the lock file
 	lock.ExpiresAt = expirationTime
 
@@ -195,7 +275,6 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 		return fmt.Errorf("failed to marshal lock data: %w", err)
 	}
 
-	lockFileFull := filepath.Join(g.RepoPath, lockFilePath)
 	if err := os.WriteFile(lockFileFull, lockData, 0644); err != nil {
 		_ = g.Checkout(currentBranch)
 		return fmt.Errorf("failed to write lock file: %w", err)
@@ -207,11 +286,19 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 		return fmt.Errorf("failed to commit lock refresh: %w", err)
 	}
 
-	// Push the branch (ignore errors in test environments)
-	_ = g.Push("origin", currentBranch)
+	// Push the branch with retries
+	pushErr := g.pushWithRetry(currentBranch)
 
-	// Restore original branch
-	_ = g.Checkout(currentBranch)
+	if pushErr != nil {
+		// If push failed, revert our change by restoring the lock file and reset
+		_ = os.WriteFile(lockFileFull, originalLockContent, 0644)
+		if err := g.ResetHard("HEAD~1"); err != nil {
+			fmt.Printf("Warning: failed to reset after push error: %v\n", err)
+		}
+		
+		// Return a descriptive error
+		return fmt.Errorf("failed to push lock refresh: %w", pushErr)
+	}
 
 	return nil
 }

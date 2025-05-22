@@ -105,6 +105,11 @@ func TestBasicGitOperations(t *testing.T) {
 		t.Fatalf("Failed to create branch: %v", err)
 	}
 
+	// Test checkout to the new branch
+	if err := repo.Checkout("test-branch"); err != nil {
+		t.Fatalf("Failed to checkout test-branch: %v", err)
+	}
+
 	// Test getting current branch
 	branch, err := repo.CurrentBranch()
 	if err != nil {

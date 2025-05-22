@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -175,7 +174,7 @@ func TestLockConcurrentWork(t *testing.T) {
 			}
 
 			if !hasLock {
-				t.Logf("Logs:\n%v", strings.Join(errors, "\n"))
+				//t.Logf("Logs:\n%v", strings.Join(errors, "\n"))
 				t.Errorf("Repo %d - Failed to acquire lock after %d tries", i, maxTries)
 				return
 			}
