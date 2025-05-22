@@ -20,7 +20,7 @@ type Lock struct {
 	Description string    `json:"description,omitempty"`
 }
 
-func NewRepoLocking(repo *gittools.GitRepo) *Locking {
+func NewRepoLocking(repo *gittools.Repo) *Locking {
 	return &Locking{
 		repo:    repo,
 		LockKey: ulid.Make().String(),
@@ -31,7 +31,7 @@ func NewRepoLocking(repo *gittools.GitRepo) *Locking {
 }
 
 type Locking struct {
-	repo    *gittools.GitRepo
+	repo    *gittools.Repo
 	LockKey string // ULID for identifying this process
 	now     func() time.Time
 }

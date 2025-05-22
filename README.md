@@ -15,28 +15,23 @@ go get github.com/ocuroot/gittools
 
 ## Core Components
 
-### GitRepo
+### Repo
 
-The `GitRepo` struct provides a high-level interface to Git operations:
+The `Repo` struct provides a high-level interface to Git operations:
 
-```go
-// Initialize a new repository
-repo, err := gittools.Init("/path/to/repo", gittools.GitInitOptions{
-    DefaultBranch: "main",
-})
+The `Repo` struct provides functionality such as:
 
-// Or open an existing repository
-repo, err := gittools.New("/path/to/existing/repo")
+- Repository initialization and cloning
+- Branch management
+- Commit operations
+- Pull and push operations
+- Merge and rebase handling
 
-// Basic Git operations
-err = repo.Add("file.txt")
-err = repo.SimpleCommit("Add new file")
-err = repo.Push("origin", "main")
-```
+See the [package documentation](https://pkg.go.dev/github.com/ocuroot/gittools) for usage examples.
 
-### RepoLocks
+### Locking
 
-The distributed locking system uses Git's conflict detection as a locking mechanism:
+The `lock` package provides a distributed locking system using Git's conflict detection as a locking mechanism:
 
 1. Locks are represented as files in a Git repository
 2. Acquiring a lock creates or modifies a lock file
@@ -44,85 +39,9 @@ The distributed locking system uses Git's conflict detection as a locking mechan
 4. Locks can have expiration times and metadata
 5. Lock history is preserved in Git commit history
 
-## Usage Examples
+## Documentation
 
-### Managing Git Repositories
-
-```go
-package main
-
-import (
-    "fmt"
-    "github.com/ocuroot/gittools"
-)
-
-func main() {
-    // Clone a repository
-    repo, err := gittools.Clone("https://github.com/example/repo.git", "./local-repo")
-    if err != nil {
-        panic(err)
-    }
-    
-    // Create a new branch
-    err = repo.CreateBranch("feature-branch")
-    if err != nil {
-        panic(err)
-    }
-    
-    // Checkout the branch
-    err = repo.Checkout("feature-branch")
-    if err != nil {
-        panic(err)
-    }
-    
-    // Make changes and commit
-    err = repo.SimpleCommit("Update documentation")
-    if err != nil {
-        panic(err)
-    }
-}
-```
-
-### Distributed Locking
-
-```go
-package main
-
-import (
-    "fmt"
-    "time"
-    "github.com/ocuroot/gittools"
-)
-
-func main() {
-    // Open existing repository
-    repo, err := gittools.New("./shared-repo")
-    if err != nil {
-        panic(err)
-    }
-    
-    // Create a locks manager
-    locks := gittools.NewRepoLocks(repo)
-    
-    // Try to acquire a lock with 10-minute expiration
-    lockPath := "resources/database-migration.lock"
-    err = locks.AcquireLock(lockPath, 10*time.Minute, "Running schema migration")
-    if err != nil {
-        fmt.Println("Resource is locked by another process")
-        return
-    }
-    
-    // Do work while holding the lock
-    fmt.Println("Lock acquired, performing work...")
-    
-    // When done, release the lock
-    err = locks.ReleaseLock(lockPath)
-    if err != nil {
-        panic(err)
-    }
-    fmt.Println("Lock released")
-}
-```
+For detailed usage examples, please refer to the [GoDoc documentation](https://pkg.go.dev/github.com/ocuroot/gittools). The package includes testable examples that demonstrate how to use the various components.
 
 ## Lock File Format
 
@@ -131,7 +50,7 @@ Lock files can be stored as any file in the repository. Each lock file contains 
 - Owner information (a ULID to identify a particular process)
 - Creation timestamp
 - Expiration timestamp
-- Custom metadata
+- Description metadata
 
 ## Limitations
 

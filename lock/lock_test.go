@@ -11,7 +11,7 @@ import (
 	"github.com/ocuroot/gittools"
 )
 
-func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*gittools.GitRepo, func()) {
+func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*gittools.Repo, func()) {
 	t.Helper()
 
 	// Create a temporary directory for the remote repository

@@ -40,13 +40,13 @@ var (
 	ErrRebaseNoCommitsApplied = errors.New("git rebase failed: no commits applied")
 )
 
-// GitRepo represents a Git repository with locking capabilities
-type GitRepo struct {
+// Repo represents a Git repository
+type Repo struct {
 	RepoPath string
 }
 
 // New creates a GitRepo instance from an existing repository
-func New(repoPath string) (*GitRepo, error) {
+func New(repoPath string) (*Repo, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
@@ -57,13 +57,13 @@ func New(repoPath string) (*GitRepo, error) {
 		return nil, fmt.Errorf("not a git repository: %s", absPath)
 	}
 
-	return &GitRepo{
+	return &Repo{
 		RepoPath: absPath,
 	}, nil
 }
 
 // Clone clones a git repository and returns a GitRepo instance
-func Clone(url, destination string) (*GitRepo, error) {
+func Clone(url, destination string) (*Repo, error) {
 	absPath, err := filepath.Abs(destination)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
@@ -82,14 +82,14 @@ func Clone(url, destination string) (*GitRepo, error) {
 		return nil, fmt.Errorf("failed to checkout main branch: %s: %w", output, err)
 	}
 
-	return &GitRepo{
+	return &Repo{
 		RepoPath: absPath,
 	}, nil
 }
 
 // execGitCommand executes a git command in the repository directory
 // Returns stdout, stderr, error
-func (g *GitRepo) execGitCommand(args ...string) ([]byte, []byte, error) {
+func (g *Repo) execGitCommand(args ...string) ([]byte, []byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = g.RepoPath
 
@@ -102,7 +102,7 @@ func (g *GitRepo) execGitCommand(args ...string) ([]byte, []byte, error) {
 }
 
 // Commit stages and commits the specified files
-func (g *GitRepo) Commit(message string, files []string) error {
+func (g *Repo) Commit(message string, files []string) error {
 	// Add the files
 	for _, file := range files {
 		stdout, stderr, err := g.execGitCommand("add", file)
@@ -123,7 +123,7 @@ func (g *GitRepo) Commit(message string, files []string) error {
 }
 
 // Fetch fetches updates from the specified remote
-func (g *GitRepo) Fetch(remote string) error {
+func (g *Repo) Fetch(remote string) error {
 	stdout, stderr, err := g.execGitCommand("fetch", remote)
 	if err != nil {
 		return fmt.Errorf("git fetch failed: %w\nstdout: %s\nstderr: %s",
@@ -134,7 +134,7 @@ func (g *GitRepo) Fetch(remote string) error {
 }
 
 // Pull pulls changes from the specified remote and branch
-func (g *GitRepo) Pull(remote, branch string) error {
+func (g *Repo) Pull(remote, branch string) error {
 	stdout, stderr, err := g.execGitCommand("pull", remote, branch)
 	if err != nil {
 		return fmt.Errorf("git pull failed: %w\nstdout: %s\nstderr: %s",
@@ -145,7 +145,7 @@ func (g *GitRepo) Pull(remote, branch string) error {
 }
 
 // Push pushes changes to the specified remote and branch
-func (g *GitRepo) Push(remote, branch string) error {
+func (g *Repo) Push(remote, branch string) error {
 	err := g.Fetch(remote)
 	if err != nil {
 		return fmt.Errorf("git fetch failed: %w", err)
@@ -182,7 +182,7 @@ func (g *GitRepo) Push(remote, branch string) error {
 }
 
 // Checkout switches to the specified branch
-func (g *GitRepo) Checkout(branch string) error {
+func (g *Repo) Checkout(branch string) error {
 	stdout, stderr, err := g.execGitCommand("checkout", branch)
 	if err != nil {
 		return fmt.Errorf("git checkout failed: %w\nstdout: %s\nstderr: %s",
@@ -193,7 +193,7 @@ func (g *GitRepo) Checkout(branch string) error {
 }
 
 // CreateBranch creates a new branch from the current HEAD
-func (g *GitRepo) CreateBranch(branch string) error {
+func (g *Repo) CreateBranch(branch string) error {
 	stdout, stderr, err := g.execGitCommand("branch", branch)
 	if err != nil {
 		return fmt.Errorf("git branch failed: %w\nstdout: %s\nstderr: %s",
@@ -237,7 +237,7 @@ type ResetOptions struct {
 }
 
 // Reset resets the repository to a specific commit
-func (g *GitRepo) Reset(opts ResetOptions) error {
+func (g *Repo) Reset(opts ResetOptions) error {
 	// Validate that a target is provided
 	if opts.Target == "" {
 		return fmt.Errorf("reset target cannot be empty; specify a commit, branch, or reference")
@@ -253,7 +253,7 @@ func (g *GitRepo) Reset(opts ResetOptions) error {
 }
 
 // ResetHard is a convenience method for hard reset to a target
-func (g *GitRepo) ResetHard(target string) error {
+func (g *Repo) ResetHard(target string) error {
 	return g.Reset(ResetOptions{
 		Mode:   ResetHard,
 		Target: target,
@@ -261,7 +261,7 @@ func (g *GitRepo) ResetHard(target string) error {
 }
 
 // Rebase rebases the current branch onto the specified branch or commit
-func (g *GitRepo) Rebase(onto string) error {
+func (g *Repo) Rebase(onto string) error {
 	stdout, stderr, err := g.execGitCommand("rebase", onto)
 	if err != nil {
 		// Parse output to determine specific error type
@@ -289,7 +289,7 @@ func (g *GitRepo) Rebase(onto string) error {
 }
 
 // CurrentBranch returns the name of the current branch
-func (g *GitRepo) CurrentBranch() (string, error) {
+func (g *Repo) CurrentBranch() (string, error) {
 	stdout, stderr, err := g.execGitCommand("rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		stdout2, stderr2, err2 := g.execGitCommand("branch")
@@ -306,7 +306,7 @@ func (g *GitRepo) CurrentBranch() (string, error) {
 	return strings.TrimSpace(string(stdout)), nil
 }
 
-func (g *GitRepo) RebaseAbort() error {
+func (g *Repo) RebaseAbort() error {
 	stdout, stderr, err := g.execGitCommand("rebase", "--abort")
 	if err != nil {
 		return fmt.Errorf("git rebase abort failed: %w\nstdout: %s\nstderr: %s",
