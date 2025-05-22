@@ -149,7 +149,7 @@ func TestLockConcurrentWork(t *testing.T) {
 
 	lockPath := "locks/test-resource.lock"
 
-	total := 2
+	total := 10
 
 	workingCount := 0
 

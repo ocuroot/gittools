@@ -87,17 +87,17 @@ func (g *GitRepo) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 		switch {
 		case errors.Is(pushErr, ErrPushNonFastForward), errors.Is(pushErr, ErrPushRejected):
 			// These errors typically mean someone else has pushed changes
-			return ErrLockConflict
+			return fmt.Errorf("%w: %v", ErrLockConflict, pushErr)
 		case errors.Is(pushErr, ErrRebaseMergeConflict):
 			// Rebase merge conflict means lock contention
-			return ErrLockConflict
+			return fmt.Errorf("%w: %v", ErrLockConflict, pushErr)
 		case errors.Is(pushErr, ErrPushPermissionDenied):
 			return fmt.Errorf("lock acquisition failed due to permission issues: %w", pushErr)
 		case errors.Is(pushErr, ErrPushRemoteRefMissing):
 			return fmt.Errorf("lock acquisition failed due to missing remote reference: %w", pushErr)
 		default:
 			// For any other errors, return a lock conflict
-			return ErrLockConflict
+			return fmt.Errorf("%w: %v", ErrLockConflict, pushErr)
 		}
 	}
 
@@ -243,21 +243,6 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 		return fmt.Errorf("cannot refresh lock that is not owned by this process")
 	}
 
-	// Make sure we have latest changes
-	if err := g.Fetch("origin"); err != nil {
-		return fmt.Errorf("failed to fetch latest changes: %w", err)
-	}
-
-	// Checkout main branch
-	if err := g.Checkout("main"); err != nil {
-		return fmt.Errorf("failed to checkout main branch: %w", err)
-	}
-
-	// Pull latest changes
-	if err := g.Pull("origin", "main"); err != nil {
-		return fmt.Errorf("failed to pull latest changes: %w", err)
-	}
-
 	// Read the original lock content first so we can restore it if needed
 	lockFileFull := filepath.Join(g.RepoPath, lockFilePath)
 	originalLockContent, err := os.ReadFile(lockFileFull)
@@ -271,18 +256,15 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 
 	lockData, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
-		_ = g.Checkout(currentBranch)
 		return fmt.Errorf("failed to marshal lock data: %w", err)
 	}
 
 	if err := os.WriteFile(lockFileFull, lockData, 0644); err != nil {
-		_ = g.Checkout(currentBranch)
 		return fmt.Errorf("failed to write lock file: %w", err)
 	}
 
 	// Commit the change
 	if err := g.Commit(fmt.Sprintf("Refresh lock for %s", lockFilePath), []string{lockFilePath}); err != nil {
-		_ = g.Checkout(currentBranch)
 		return fmt.Errorf("failed to commit lock refresh: %w", err)
 	}
 
@@ -308,12 +290,6 @@ func (g *GitRepo) RefreshLock(lockFilePath string, expirationTime time.Time) err
 // - *Lock: the lock object if the resource is locked, nil otherwise
 // - error: any error that occurred
 func (g *GitRepo) ReadLock(lockFilePath string) (*Lock, error) {
-	// Make sure we have latest changes (ignore errors in test environments)
-	err := g.Pull("origin", "main")
-	if err != nil {
-		return nil, fmt.Errorf("failed to pull latest changes: %w", err)
-	}
-
 	// Ensure lock directory exists first (added for tests)
 	lockDir := filepath.Dir(filepath.Join(g.RepoPath, lockFilePath))
 	_ = os.MkdirAll(lockDir, 0755) // Ignore errors
@@ -349,10 +325,6 @@ func (g *GitRepo) ReadLock(lockFilePath string) (*Lock, error) {
 // - bool: true if this repo owns the lock, false otherwise
 // - error: any error that occurred
 func (g *GitRepo) OwnsLock(lock *Lock) (bool, error) {
-	if lock == nil {
-		return false, nil
-	}
-
 	if lock == nil {
 		return false, nil
 	}

@@ -189,7 +189,7 @@ func (g *GitRepo) Push(remote, branch string) error {
 		combinedOutput := outputStr + stderrStr
 
 		switch {
-		case strings.Contains(combinedOutput, "fetch-first"):
+		case strings.Contains(combinedOutput, "fetch first"):
 			return fmt.Errorf("%w: %s", ErrPushFetchFirst, combinedOutput)
 		case strings.Contains(combinedOutput, "non-fast-forward"):
 			return fmt.Errorf("%w: %s", ErrPushNonFastForward, combinedOutput)
