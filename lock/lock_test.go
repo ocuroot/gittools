@@ -3,12 +3,12 @@ package lock
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/ocuroot/gittools"
+	"github.com/ocuroot/gittools/testutils"
 )
 
 func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*gittools.Repo, func()) {
@@ -36,113 +36,19 @@ func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*gittools.Repo, fun
 func setupRemoteTestRepo(t *testing.T) (string, string, func()) {
 	t.Helper()
 
-	// Create a temporary directory for the remote repository
-	remoteDir, err := os.MkdirTemp("", "gitlock-remote-")
+	// Create a bare repository using testutils
+	remoteDir, remoteCleanup, err := testutils.CreateTestRemoteRepo("gitlock-test")
 	if err != nil {
-		t.Fatalf("Failed to create remote temp directory: %v", err)
+		t.Fatalf("Failed to create remote repository: %v", err)
 	}
 
-	// Initialize bare git repository for the remote
-	cmd := exec.Command("git", "init", "--bare", remoteDir)
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		t.Fatalf("Failed to initialize bare git repository: %v", err)
-	}
+	// Clone the remote repository to create the local working copy
+	localRepo, localCleanup := checkoutRemoteTestRepo(t, remoteDir)
 
-	// Set main as the default branch for the remote
-	cmd = exec.Command("git", "symbolic-ref", "HEAD", "refs/heads/main")
-	cmd.Dir = remoteDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		t.Fatalf("Failed to set default branch for remote: %v", err)
-	}
-
-	// Create a temporary directory for the local repository
-	localDir, err := os.MkdirTemp("", "gitlock-local-")
-	if err != nil {
-		os.RemoveAll(remoteDir)
-		t.Fatalf("Failed to create local temp directory: %v", err)
-	}
-
-	// Initialize git repository
-	cmd = exec.Command("git", "init", localDir)
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to initialize git repository: %v", err)
-	}
-
-	// Set git config for the test repository
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to set git config user.name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to set git config user.email: %v", err)
-	}
-
-	// Create an initial commit
-	readme := filepath.Join(localDir, "README.md")
-	if err := os.WriteFile(readme, []byte("# Test Repository\n"), 0644); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to write README.md: %v", err)
-	}
-
-	cmd = exec.Command("git", "add", "README.md")
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	cmd = exec.Command("git", "commit", "-m", "Initial commit")
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to git commit: %v", err)
-	}
-
-	// Rename the branch to main
-	cmd = exec.Command("git", "branch", "-M", "main")
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to rename branch: %v", err)
-	}
-
-	// Add the remote
-	cmd = exec.Command("git", "remote", "add", "origin", remoteDir)
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to add remote: %v", err)
-	}
-
-	// Push to the remote
-	cmd = exec.Command("git", "push", "-u", "origin", "main")
-	cmd.Dir = localDir
-	if err := cmd.Run(); err != nil {
-		os.RemoveAll(remoteDir)
-		os.RemoveAll(localDir)
-		t.Fatalf("Failed to push to remote: %v", err)
-	}
-
-	return localDir, remoteDir, func() {
-		os.RemoveAll(localDir)
-		os.RemoveAll(remoteDir)
+	// Return the paths and a combined cleanup function
+	return localRepo.RepoPath, remoteDir, func() {
+		localCleanup()
+		remoteCleanup()
 	}
 }
 

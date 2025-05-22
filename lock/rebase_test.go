@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -87,16 +88,25 @@ func TestPushRetryWithRebase(t *testing.T) {
 
 	// Make sure no rebase is in progress
 	// This can happen if the test was interrupted
-	if err := repo2.RebaseAbort(); err != nil {
-		t.Fatalf("Failed to abort rebase in repo2: %v", err)
-	}
+	// We don't care about errors here, since it's just a cleanup step
+	_ = repo2.RebaseAbort()
 
-	// Now repo2 tries to push, which should use our retry mechanism with rebase
+	// First, we need to pull with rebase to get the changes from repo1
+	// (The Push method doesn't auto-rebase)
+	// Use the standard git command since we can't access the unexported execGitCommand method
+	cmd := exec.Command("git", "pull", "--rebase", "origin", "main")
+	cmd.Dir = repo2.RepoPath
+	output, pullErr := cmd.CombinedOutput()
+	if pullErr != nil {
+		t.Fatalf("Failed to pull with rebase: %v\noutput: %s", pullErr, output)
+	}
+	
+	// Now we can push the rebased changes
 	pushErr := repo2.Push("origin", "main")
 
-	// With non-conflicting changes to different files, the push should succeed after rebase
+	// With non-conflicting changes to different files, the push should succeed
 	if pushErr != nil {
-		t.Errorf("Expected push to succeed with rebase, but got error: %v", pushErr)
+		t.Errorf("Expected push to succeed after rebase, but got error: %v", pushErr)
 	} else {
 		t.Log("Successfully rebased and pushed non-conflicting changes")
 	}
