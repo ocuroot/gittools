@@ -101,6 +101,22 @@ func (g *Repo) execGitCommand(args ...string) ([]byte, []byte, error) {
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
+func (g *Repo) CommitAll(message string) error {
+	stdout, stderr, err := g.execGitCommand("add", "--all")
+	if err != nil {
+		return fmt.Errorf("git add failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+
+	stdout, stderr, err = g.execGitCommand("commit", "-m", message)
+	if err != nil {
+		return fmt.Errorf("git commit failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+
+	return nil
+}
+
 // Commit stages and commits the specified files
 func (g *Repo) Commit(message string, files []string) error {
 	// Add the files
