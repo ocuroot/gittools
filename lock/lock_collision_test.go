@@ -21,12 +21,12 @@ func TestLockCollision(t *testing.T) {
 
 	// Create two separate repos pointing to the same directory
 	// to simulate two different processes
-	repo1, err := gittools.New(localDir)
+	repo1, err := gittools.Open(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create first GitRepo: %v", err)
 	}
 
-	repo2, err := gittools.New(localDir)
+	repo2, err := gittools.Open(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create second GitRepo: %v", err)
 	}

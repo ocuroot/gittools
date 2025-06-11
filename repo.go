@@ -1,11 +1,9 @@
 package gittools
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -42,11 +40,12 @@ var (
 
 // Repo represents a Git repository
 type Repo struct {
+	Client   *Client
 	RepoPath string
 }
 
-// New creates a GitRepo instance from an existing repository
-func New(repoPath string) (*Repo, error) {
+// Open opens a GitRepo instance from an existing repository
+func Open(repoPath string) (*Repo, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
@@ -58,57 +57,19 @@ func New(repoPath string) (*Repo, error) {
 	}
 
 	return &Repo{
+		Client:   &Client{WorkDir: absPath},
 		RepoPath: absPath,
 	}, nil
-}
-
-// Clone clones a git repository and returns a GitRepo instance
-func Clone(url, destination string) (*Repo, error) {
-	absPath, err := filepath.Abs(destination)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %w", err)
-	}
-
-	// Execute git clone
-	cmd := exec.Command("git", "clone", url, absPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("git clone failed: %s: %w", output, err)
-	}
-
-	// After cloning, explicitly check out the main branch
-	cmd = exec.Command("git", "checkout", "main")
-	cmd.Dir = absPath
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to checkout main branch: %s: %w", output, err)
-	}
-
-	return &Repo{
-		RepoPath: absPath,
-	}, nil
-}
-
-// execGitCommand executes a git command in the repository directory
-// Returns stdout, stderr, error
-func (g *Repo) execGitCommand(args ...string) ([]byte, []byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = g.RepoPath
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
 }
 
 func (g *Repo) CommitAll(message string) error {
-	stdout, stderr, err := g.execGitCommand("add", "--all")
+	stdout, stderr, err := g.Client.Exec("add", "--all")
 	if err != nil {
 		return fmt.Errorf("git add failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
 	}
 
-	stdout, stderr, err = g.execGitCommand("commit", "-m", message)
+	stdout, stderr, err = g.Client.Exec("commit", "-m", message)
 	if err != nil {
 		return fmt.Errorf("git commit failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -121,7 +82,7 @@ func (g *Repo) CommitAll(message string) error {
 func (g *Repo) Commit(message string, files []string) error {
 	// Add the files
 	for _, file := range files {
-		stdout, stderr, err := g.execGitCommand("add", file)
+		stdout, stderr, err := g.Client.Exec("add", file)
 		if err != nil {
 			return fmt.Errorf("git add failed for %s: %w\nstdout: %s\nstderr: %s",
 				file, err, stdout, stderr)
@@ -129,7 +90,7 @@ func (g *Repo) Commit(message string, files []string) error {
 	}
 
 	// Commit the changes
-	stdout, stderr, err := g.execGitCommand("commit", "-m", message)
+	stdout, stderr, err := g.Client.Exec("commit", "-m", message)
 	if err != nil {
 		return fmt.Errorf("git commit failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -140,7 +101,7 @@ func (g *Repo) Commit(message string, files []string) error {
 
 // Fetch fetches updates from the specified remote
 func (g *Repo) Fetch(remote string) error {
-	stdout, stderr, err := g.execGitCommand("fetch", remote)
+	stdout, stderr, err := g.Client.Exec("fetch", remote)
 	if err != nil {
 		return fmt.Errorf("git fetch failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -151,7 +112,7 @@ func (g *Repo) Fetch(remote string) error {
 
 // Pull pulls changes from the specified remote and branch
 func (g *Repo) Pull(remote, branch string) error {
-	stdout, stderr, err := g.execGitCommand("pull", remote, branch)
+	stdout, stderr, err := g.Client.Exec("pull", remote, branch)
 	if err != nil {
 		return fmt.Errorf("git pull failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -166,7 +127,7 @@ func (g *Repo) Push(remote, branch string) error {
 	if err != nil {
 		return fmt.Errorf("git fetch failed: %w", err)
 	}
-	stdout, stderr, err := g.execGitCommand("push", "--porcelain", remote, branch)
+	stdout, stderr, err := g.Client.Exec("push", "--porcelain", remote, branch)
 	if err != nil {
 		// Parse the output to determine the specific error type
 		outputStr := string(stdout)
@@ -199,7 +160,7 @@ func (g *Repo) Push(remote, branch string) error {
 
 // Checkout switches to the specified branch
 func (g *Repo) Checkout(branch string) error {
-	stdout, stderr, err := g.execGitCommand("checkout", branch)
+	stdout, stderr, err := g.Client.Exec("checkout", branch)
 	if err != nil {
 		return fmt.Errorf("git checkout failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -210,7 +171,7 @@ func (g *Repo) Checkout(branch string) error {
 
 // CreateBranch creates a new branch from the current HEAD
 func (g *Repo) CreateBranch(branch string) error {
-	stdout, stderr, err := g.execGitCommand("branch", branch)
+	stdout, stderr, err := g.Client.Exec("branch", branch)
 	if err != nil {
 		return fmt.Errorf("git branch failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -259,7 +220,7 @@ func (g *Repo) Reset(opts ResetOptions) error {
 		return fmt.Errorf("reset target cannot be empty; specify a commit, branch, or reference")
 	}
 
-	stdout, stderr, err := g.execGitCommand("reset", opts.Mode.String(), opts.Target)
+	stdout, stderr, err := g.Client.Exec("reset", opts.Mode.String(), opts.Target)
 	if err != nil {
 		return fmt.Errorf("git reset failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -278,7 +239,7 @@ func (g *Repo) ResetHard(target string) error {
 
 // Rebase rebases the current branch onto the specified branch or commit
 func (g *Repo) Rebase(onto string) error {
-	stdout, stderr, err := g.execGitCommand("rebase", onto)
+	stdout, stderr, err := g.Client.Exec("rebase", onto)
 	if err != nil {
 		// Parse output to determine specific error type
 		stdoutStr := string(stdout)
@@ -306,9 +267,9 @@ func (g *Repo) Rebase(onto string) error {
 
 // CurrentBranch returns the name of the current branch
 func (g *Repo) CurrentBranch() (string, error) {
-	stdout, stderr, err := g.execGitCommand("rev-parse", "--abbrev-ref", "HEAD")
+	stdout, stderr, err := g.Client.Exec("rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
-		stdout2, stderr2, err2 := g.execGitCommand("branch")
+		stdout2, stderr2, err2 := g.Client.Exec("branch")
 		if err2 != nil {
 			return "", fmt.Errorf("failed to get branch info: %w\nstdout: %s\nstderr: %s",
 				err2, stdout2, stderr2)
@@ -322,12 +283,62 @@ func (g *Repo) CurrentBranch() (string, error) {
 	return strings.TrimSpace(string(stdout)), nil
 }
 
+// RebaseAbort aborts the current rebase
 func (g *Repo) RebaseAbort() error {
-	stdout, stderr, err := g.execGitCommand("rebase", "--abort")
+	stdout, stderr, err := g.Client.Exec("rebase", "--abort")
 	if err != nil {
 		return fmt.Errorf("git rebase abort failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
 	}
 
 	return nil
+}
+
+// ConfigSet sets a git config value for the repository
+func (c *Repo) ConfigSet(key, value string) error {
+	// --local is the default, but setting it here to be explicit
+	_, _, err := c.Client.Exec("config", "set", "--local", key, value)
+	return err
+}
+
+// ConfigGet gets a git config value for the repository
+func (c *Repo) ConfigGet(key string) (string, error) {
+	// --local is the default, but setting it here to be explicit
+	stdout, stderr, err := c.Client.Exec("config", "get", "--local", key)
+	if err != nil {
+		return "", fmt.Errorf("git config get failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+	return string(stdout), nil
+}
+
+// AddRemote adds a remote to the repository
+func (c *Repo) AddRemote(remote string, url string) error {
+	_, _, err := c.Client.Exec("remote", "add", remote, url)
+	return err
+}
+
+// RemoteURL returns the URL of a remote
+// If push is true, returns the push URL, otherwise the fetch URL
+func (r *Repo) RemoteURL(remote string, push bool) (string, error) {
+	args := []string{"remote", "get-url", remote}
+	if push {
+		args = append(args, "--push")
+	}
+	stdout, stderr, err := r.Client.Exec(args...)
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+	return string(stdout), nil
+}
+
+// FileAtCommit returns the content of a file at a specific commit
+func (r *Repo) FileAtCommit(commit string, path string) (string, error) {
+	stdout, stderr, err := r.Client.Exec("show", commit+":"+path)
+	if err != nil {
+		return "", fmt.Errorf("git show failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+	return string(stdout), nil
 }

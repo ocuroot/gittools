@@ -20,7 +20,9 @@ func checkoutRemoteTestRepo(t *testing.T, remoteDir string) (*gittools.Repo, fun
 		t.Fatalf("Failed to create local temp directory: %v", err)
 	}
 
-	repo, err := gittools.Clone(fmt.Sprintf("file://%s", remoteDir), localDir)
+	client := gittools.Client{}
+
+	repo, err := client.Clone(fmt.Sprintf("file://%s", remoteDir), localDir)
 	if err != nil {
 		os.RemoveAll(localDir)
 		t.Fatalf("Failed to clone remote repository: %v", err)
@@ -56,7 +58,7 @@ func TestLockAcquireRelease(t *testing.T) {
 	localDir, _, cleanup := setupRemoteTestRepo(t)
 	defer cleanup()
 
-	repo, err := gittools.New(localDir)
+	repo, err := gittools.Open(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create GitRepo: %v", err)
 	}

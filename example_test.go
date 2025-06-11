@@ -30,7 +30,8 @@ func Example_repositoryManagement() {
 	defer os.RemoveAll(cloneDir)
 
 	// Clone the repository using our library
-	repo, err := gittools.Clone(remoteRepo, cloneDir)
+	client := gittools.Client{}
+	repo, err := client.Clone(remoteRepo, cloneDir)
 	if err != nil {
 		fmt.Printf("Failed to clone repository: %v\n", err)
 		return
@@ -116,7 +117,8 @@ func Example_distributedLocking() {
 	defer os.RemoveAll(cloneDir)
 
 	// Clone the repository using our library
-	repo, err := gittools.Clone(remoteRepo, cloneDir)
+	client := gittools.Client{}
+	repo, err := client.Clone(remoteRepo, cloneDir)
 	if err != nil {
 		fmt.Printf("Failed to clone repository: %v\n", err)
 		return
@@ -146,5 +148,3 @@ func Example_distributedLocking() {
 	// Lock acquired, performing work...
 	// Lock released
 }
-
-

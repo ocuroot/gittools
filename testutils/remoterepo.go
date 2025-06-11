@@ -4,8 +4,9 @@ package testutils
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/ocuroot/gittools"
 )
 
 // CreateTestRemoteRepo creates an initialized bare Git repository for testing.
@@ -22,9 +23,11 @@ func CreateTestRemoteRepo(baseName string) (repoPath string, cleanup func(), err
 		os.RemoveAll(repoPath)
 	}
 
+	client := &gittools.Client{}
+
 	// Initialize bare repository
-	cmd := exec.Command("git", "init", "--bare", "--initial-branch=main", repoPath)
-	if err := cmd.Run(); err != nil {
+	_, err = client.InitBare(repoPath, "main")
+	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to initialize bare repository: %w", err)
 	}
@@ -38,31 +41,20 @@ func CreateTestRemoteRepo(baseName string) (repoPath string, cleanup func(), err
 	defer os.RemoveAll(tempDir)
 
 	// Initialize a temp repo to make the initial commit
-	cmd = exec.Command("git", "init", "--initial-branch=main", tempDir)
-	if err := cmd.Run(); err != nil {
+	repo, err := client.Init(tempDir, "main")
+	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to initialize temp repository: %w", err)
 	}
 
 	// Set git config for the temp repository
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to set git config user.name: %w", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to set git config user.email: %w", err)
-	}
+	repo.ConfigSet("user.name", "Test User")
+	repo.ConfigSet("user.email", "test@example.com")
 
 	// Add the bare repo as a remote
-	cmd = exec.Command("git", "remote", "add", "origin", repoPath)
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
+
+	err = repo.AddRemote("origin", repoPath)
+	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to add remote: %w", err)
 	}
@@ -74,25 +66,14 @@ func CreateTestRemoteRepo(baseName string) (repoPath string, cleanup func(), err
 		return "", nil, fmt.Errorf("failed to write README.md: %w", err)
 	}
 
-	// Add and commit README
-	cmd = exec.Command("git", "add", "README.md")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to add README.md: %w", err)
-	}
-
-	cmd = exec.Command("git", "commit", "-m", "Initial commit")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
+	err = repo.CommitAll("Initial commit")
+	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Push to the bare repo
-	cmd = exec.Command("git", "push", "origin", "main")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
+	err = repo.Push("origin", "main")
+	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to push: %w", err)
 	}

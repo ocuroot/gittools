@@ -12,7 +12,7 @@ func TestLockExpiration(t *testing.T) {
 	localDir, _, cleanup := setupRemoteTestRepo(t)
 	defer cleanup()
 
-	repo, err := gittools.New(localDir)
+	repo, err := gittools.Open(localDir)
 	if err != nil {
 		t.Fatalf("Failed to create GitRepo: %v", err)
 	}
