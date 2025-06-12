@@ -51,15 +51,42 @@ func Open(repoPath string) (*Repo, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Check if the directory exists and is a git repository
-	if _, err := os.Stat(filepath.Join(absPath, ".git")); os.IsNotExist(err) {
-		return nil, fmt.Errorf("not a git repository: %s", absPath)
+	// Walk up the directory tree to find the git repository root
+	gitRoot, err := findGitRoot(absPath)
+	if err != nil {
+		return nil, err
 	}
+	
+	// Use the git root as the repo path
+	absPath = gitRoot
 
 	return &Repo{
 		Client:   &Client{WorkDir: absPath},
 		RepoPath: absPath,
 	}, nil
+}
+
+// findGitRoot walks up the directory tree to find the git repository root
+func findGitRoot(startPath string) (string, error) {
+	currentPath := startPath
+	
+	for {
+		// Check if .git exists in the current directory
+		gitPath := filepath.Join(currentPath, ".git")
+		if _, err := os.Stat(gitPath); err == nil {
+			return currentPath, nil
+		}
+		
+		// Get the parent directory
+		parentPath := filepath.Dir(currentPath)
+		
+		// Check if we've reached the filesystem root
+		if parentPath == currentPath {
+			return "", fmt.Errorf("not a git repository: %s (or any of the parent directories)", startPath)
+		}
+		
+		currentPath = parentPath
+	}
 }
 
 func (g *Repo) CommitAll(message string) error {
