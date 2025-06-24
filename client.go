@@ -43,9 +43,9 @@ func (c *Client) InitBare(destination, defaultBranch string) (*Repo, error) {
 	c2 := *c
 	c2.WorkDir = destination
 
-	_, _, err := c2.Exec("init", "--bare", "--initial-branch="+defaultBranch, destination)
+	stdoutContent, stdErrContent, err := c2.Exec("init", "--bare", "--initial-branch="+defaultBranch, destination)
 	if err != nil {
-		return nil, fmt.Errorf("git init failed: %w", err)
+		return nil, fmt.Errorf("git init failed: %w\nstdout: %s\nstderr: %s", err, stdoutContent, stdErrContent)
 	}
 
 	return &Repo{
@@ -70,9 +70,9 @@ func (c *Client) Clone(url, destination string) (*Repo, error) {
 	c2.WorkDir = absPath
 
 	// After cloning, explicitly check out the main branch
-	output, _, err = c2.Exec("checkout", "main")
+	output, stdErrContent, err := c2.Exec("checkout", "main")
 	if err != nil {
-		return nil, fmt.Errorf("failed to checkout main branch: %s: %w", output, err)
+		return nil, fmt.Errorf("failed to checkout main branch: %w\nstdout: %s\nstderr: %s", err, output, stdErrContent)
 	}
 
 	return &Repo{

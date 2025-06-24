@@ -56,7 +56,7 @@ func Open(repoPath string) (*Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Use the git root as the repo path
 	absPath = gitRoot
 
@@ -69,22 +69,22 @@ func Open(repoPath string) (*Repo, error) {
 // findGitRoot walks up the directory tree to find the git repository root
 func findGitRoot(startPath string) (string, error) {
 	currentPath := startPath
-	
+
 	for {
 		// Check if .git exists in the current directory
 		gitPath := filepath.Join(currentPath, ".git")
 		if _, err := os.Stat(gitPath); err == nil {
 			return currentPath, nil
 		}
-		
+
 		// Get the parent directory
 		parentPath := filepath.Dir(currentPath)
-		
+
 		// Check if we've reached the filesystem root
 		if parentPath == currentPath {
 			return "", fmt.Errorf("not a git repository: %s (or any of the parent directories)", startPath)
 		}
-		
+
 		currentPath = parentPath
 	}
 }
@@ -365,6 +365,46 @@ func (r *Repo) FileAtCommit(commit string, path string) (string, error) {
 	stdout, stderr, err := r.Client.Exec("show", commit+":"+path)
 	if err != nil {
 		return "", fmt.Errorf("git show failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+	return string(stdout), nil
+}
+
+type DiffOptions struct {
+	NoPatch  bool
+	NameOnly bool
+	Paths    []string
+	Cached   bool
+	Unified  bool
+	Raw      bool
+}
+
+func (r *Repo) Diff(options DiffOptions, commits ...string) (string, error) {
+	args := []string{"diff"}
+	if options.NoPatch {
+		args = append(args, "--no-patch")
+	}
+	if options.NameOnly {
+		args = append(args, "--name-only")
+	}
+	if options.Cached {
+		args = append(args, "--cached")
+	}
+	if options.Unified {
+		args = append(args, "--unified")
+	}
+	if options.Raw {
+		args = append(args, "--raw")
+	}
+	args = append(args, commits...)
+	if len(options.Paths) > 0 {
+		args = append(args, "--")
+		args = append(args, options.Paths...)
+	}
+
+	stdout, stderr, err := r.Client.Exec(args...)
+	if err != nil {
+		return "", fmt.Errorf("git diff failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
 	}
 	return string(stdout), nil
