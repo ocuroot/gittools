@@ -409,3 +409,113 @@ func (r *Repo) Diff(options DiffOptions, commits ...string) (string, error) {
 	}
 	return string(stdout), nil
 }
+
+type LsFilesOptions struct {
+	Cached              bool
+	Deleted             bool
+	Others              bool
+	Ignored             bool
+	Stage               bool
+	Unmerged            bool
+	Killed              bool
+	Modified            bool
+	ResolveUndo         bool
+	Directory           bool
+	NoEmptyDirectory    bool
+	Eol                 bool
+	Deduplicate         bool
+	Exclude             []string
+	ExcludeFrom         []string
+	ExcludePerDirectory []string
+	ExcludeStandard     bool
+	ErrorUnmatch        bool
+	WithTree            string
+	FullName            bool
+	RecurseSubmodules   bool
+	Abbrev              int
+	Format              string
+	Paths               []string
+}
+
+func (r *Repo) LsFiles(options LsFilesOptions) (string, error) {
+	args := []string{"ls-files"}
+	if options.Cached {
+		args = append(args, "-c", "--cached")
+	}
+	if options.Deleted {
+		args = append(args, "-d", "--deleted")
+	}
+	if options.Others {
+		args = append(args, "-o", "--others")
+	}
+	if options.Ignored {
+		args = append(args, "-i", "--ignored")
+	}
+	if options.Stage {
+		args = append(args, "-s", "--stage")
+	}
+	if options.Unmerged {
+		args = append(args, "-u", "--unmerged")
+	}
+	if options.Killed {
+		args = append(args, "-k", "--killed")
+	}
+	if options.Modified {
+		args = append(args, "-m", "--modified")
+	}
+	if options.ResolveUndo {
+		args = append(args, "--resolve-undo")
+	}
+	if options.Directory {
+		args = append(args, "--directory")
+	}
+	if options.NoEmptyDirectory {
+		args = append(args, "--no-empty-directory")
+	}
+	if options.Eol {
+		args = append(args, "--eol")
+	}
+	if options.Deduplicate {
+		args = append(args, "--deduplicate")
+	}
+	for _, path := range options.Exclude {
+		args = append(args, "-x", path)
+	}
+	for _, path := range options.ExcludeFrom {
+		args = append(args, "-X", path)
+	}
+	for _, path := range options.ExcludePerDirectory {
+		args = append(args, "--exclude-per-directory", path)
+	}
+	if options.ExcludeStandard {
+		args = append(args, "--exclude-standard")
+	}
+	if options.ErrorUnmatch {
+		args = append(args, "--error-unmatch")
+	}
+	if options.WithTree != "" {
+		args = append(args, "--with-tree", options.WithTree)
+	}
+	if options.FullName {
+		args = append(args, "--full-name")
+	}
+	if options.RecurseSubmodules {
+		args = append(args, "--recurse-submodules")
+	}
+	if options.Abbrev != 0 {
+		args = append(args, fmt.Sprintf("--abbrev=%d", options.Abbrev))
+	}
+	if options.Format != "" {
+		args = append(args, fmt.Sprintf("--format=%s", options.Format))
+	}
+	if len(options.Paths) > 0 {
+		args = append(args, "--")
+		args = append(args, options.Paths...)
+	}
+	stdout, stderr, err := r.Client.Exec(args...)
+	if err != nil {
+		return "", fmt.Errorf("git ls-files failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+	return string(stdout), nil
+}
