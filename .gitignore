@@ -1,0 +1,18 @@
+# Test artifacts
+**/testdata/
+
+# Lock files from tests
+**/locks/*.lock
+locks/
+
+# Go test binaries
+*.test
+
+# Test coverage output
+*.out
+*.cov
+coverage.txt
+
+# Temporary directories created by tests
+tmp/
+temp/

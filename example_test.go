@@ -8,13 +8,12 @@ import (
 
 	"github.com/ocuroot/gittools"
 	"github.com/ocuroot/gittools/lock"
-	"github.com/ocuroot/gittools/testutils"
 )
 
 // This example demonstrates how to clone a repository and perform basic operations with it.
 func Example_repositoryManagement() {
 	// Create a bare repository that we can clone from
-	remoteRepo, remoteCleanup, err := testutils.CreateTestRemoteRepo("gittools-example")
+	remoteRepo, remoteCleanup, err := gittools.CreateTestRemoteRepo("gittools-example")
 	if err != nil {
 		fmt.Printf("Failed to create bare repository: %v\n", err)
 		return
@@ -101,7 +100,7 @@ func Example_repositoryManagement() {
 // This example demonstrates how to use the distributed locking system.
 func Example_distributedLocking() {
 	// Create a bare repository in a temp dir that we can clone from
-	remoteRepo, remoteCleanup, err := testutils.CreateTestRemoteRepo("gittools-lock-example")
+	remoteRepo, remoteCleanup, err := gittools.CreateTestRemoteRepo("gittools-lock-example")
 	if err != nil {
 		fmt.Printf("Failed to create bare repository: %v\n", err)
 		return

@@ -96,6 +96,8 @@ func (g *Locking) AcquireLock(lockFilePath string, expiryDuration time.Duration,
 	}
 
 	// Commit and push the lock file
+	// We need to use the relative path for the commit (not the full path which might be outside the repo)
+	// This ensures files are only committed within the repository's directory structure
 	if err := g.repo.Commit(fmt.Sprintf("Acquire lock on %s", lockFilePath), []string{lockFilePath}); err != nil {
 		// Remove the lock file
 		_ = os.Remove(fullLockPath)
@@ -162,7 +164,7 @@ func (g *Locking) ReleaseLock(lockFilePath string) error {
 	}
 
 	// Make sure we have latest changes
-	if err := g.repo.Fetch("origin"); err != nil {
+	if err := g.repo.Fetch("origin", gittools.FetchOptions{}); err != nil {
 		return fmt.Errorf("failed to fetch latest changes: %w", err)
 	}
 
@@ -177,9 +179,9 @@ func (g *Locking) ReleaseLock(lockFilePath string) error {
 		return fmt.Errorf("failed to remove lock file: %w", err)
 	}
 
-	// Commit the change
+	// Commit the change - this was missing and causing issues
 	if err := g.repo.Commit(fmt.Sprintf("Release lock for %s", lockFilePath), []string{lockFilePath}); err != nil {
-		return fmt.Errorf("failed to commit lock release: %w", err)
+		return fmt.Errorf("failed to commit lock file removal: %w", err)
 	}
 
 	// Push the branch with retries
@@ -215,7 +217,7 @@ func (g *Locking) pushWithRetry(branch string) error {
 		// Only retry for non-fast-forward or fetch-first errors
 		if retry < maxRetries && (errors.Is(lastErr, gittools.ErrPushNonFastForward) || errors.Is(lastErr, gittools.ErrPushFetchFirst)) {
 			// First fetch the latest changes
-			fetchErr := g.repo.Fetch("origin")
+			fetchErr := g.repo.Fetch("origin", gittools.FetchOptions{})
 			if fetchErr != nil {
 				// Failed to fetch, continue to next retry attempt
 				continue
@@ -296,6 +298,7 @@ func (g *Locking) RefreshLock(lockFilePath string, expirationTime time.Time) err
 	}
 
 	// Commit the change
+	// Using relative paths ensures we only commit within the repo directory
 	if err := g.repo.Commit(fmt.Sprintf("Refresh lock for %s", lockFilePath), []string{lockFilePath}); err != nil {
 		return fmt.Errorf("failed to commit lock refresh: %w", err)
 	}

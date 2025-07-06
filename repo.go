@@ -1,11 +1,14 @@
 package gittools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Git push error types
@@ -126,9 +129,17 @@ func (g *Repo) Commit(message string, files []string) error {
 	return nil
 }
 
+type FetchOptions struct {
+	Depth int
+}
+
 // Fetch fetches updates from the specified remote
-func (g *Repo) Fetch(remote string) error {
-	stdout, stderr, err := g.Client.Exec("fetch", remote)
+func (g *Repo) Fetch(remote string, options FetchOptions) error {
+	args := []string{"fetch", remote}
+	if options.Depth != 0 {
+		args = append(args, fmt.Sprintf("--depth=%d", options.Depth))
+	}
+	stdout, stderr, err := g.Client.Exec(args...)
 	if err != nil {
 		return fmt.Errorf("git fetch failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
@@ -150,7 +161,7 @@ func (g *Repo) Pull(remote, branch string) error {
 
 // Push pushes changes to the specified remote and branch
 func (g *Repo) Push(remote, branch string) error {
-	err := g.Fetch(remote)
+	err := g.Fetch(remote, FetchOptions{})
 	if err != nil {
 		return fmt.Errorf("git fetch failed: %w", err)
 	}
@@ -370,6 +381,93 @@ func (r *Repo) FileAtCommit(commit string, path string) (string, error) {
 	return string(stdout), nil
 }
 
+// RevParse executes git rev-parse with the given arguments
+// Common usages include getting HEAD commit (RevParse("HEAD")), 
+// checking if a string is a valid reference (RevParse("--verify", ref)),
+// and getting the short version of a commit (RevParse("--short", commit))
+func (r *Repo) RevParse(args ...string) (string, error) {
+	cmdArgs := append([]string{"rev-parse"}, args...)
+	stdout, stderr, err := r.Client.Exec(cmdArgs...)
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse failed: %w\nstdout: %s\nstderr: %s", 
+			err, stdout, stderr)
+	}
+	return strings.TrimSpace(string(stdout)), nil
+}
+
+// CatFileOptions defines options for the git cat-file command
+type CatFileOptions struct {
+	// Check if object exists (-e)
+	Exists bool
+
+	// Show object type (-t)
+	ShowType bool
+
+	// Show object content (-p)
+	ShowContent bool
+
+	// Show object size (-s)
+	ShowSize bool
+
+	// Object ID (commit hash, tag, etc)
+	ObjectID string
+}
+
+// CatFile executes git cat-file with the provided options
+// Returns:
+// - exists: true if the object exists, false if not
+// - content: object content, type or size depending on options (empty for -e)
+// - error: system errors only, not "object not found" which is indicated by exists=false
+func (r *Repo) CatFile(options CatFileOptions) (exists bool, content string, err error) {
+	if options.ObjectID == "" {
+		return false, "", fmt.Errorf("empty object ID provided to CatFile")
+	}
+
+	// Build arguments based on options
+	args := []string{"cat-file"}
+
+	if options.Exists {
+		args = append(args, "-e")
+	} else if options.ShowType {
+		args = append(args, "-t")
+	} else if options.ShowContent {
+		args = append(args, "-p")
+	} else if options.ShowSize {
+		args = append(args, "-s")
+	} else {
+		// Default to -e if no option specified
+		args = append(args, "-e")
+		options.Exists = true
+	}
+
+	args = append(args, options.ObjectID)
+
+	// Execute the command
+	stdout, stderr, err := r.Client.Exec(args...)
+	
+	if err != nil {
+		// For -e flag, exit status 1 means the object doesn't exist
+		// This is expected behavior, not an error condition
+		if options.Exists {
+			return false, "", nil
+		}
+
+		// For other operations, check common error messages that indicate
+		// a non-existent object rather than a system error
+		if strings.Contains(string(stderr), "Not a valid object name") ||
+		   strings.Contains(string(stderr), "does not exist") ||
+		   strings.Contains(string(stderr), "could not get object") ||
+		   strings.Contains(string(stderr), "fatal: not a valid object") {
+			return false, "", nil
+		}
+		
+		return false, "", fmt.Errorf("git cat-file failed: %w\nstderr: %s", err, stderr)
+	}
+
+	// Command succeeded, object exists
+	return true, strings.TrimSpace(string(stdout)), nil
+}
+
 type DiffOptions struct {
 	NoPatch  bool
 	NameOnly bool
@@ -518,4 +616,542 @@ func (r *Repo) LsFiles(options LsFilesOptions) (string, error) {
 			err, stdout, stderr)
 	}
 	return string(stdout), nil
+}
+
+type LogItem struct {
+	Commit  string
+	Author  string
+	Date    string
+	Message string
+	Tags    []string
+}
+
+type LogOptions struct {
+	Source   bool
+	Oneline  bool
+	Decorate bool
+	Tags     bool
+
+	Commit1 string
+	Commit2 string
+}
+
+// parseOnelineFormat parses git log output in the oneline format and returns a slice of LogItems.
+// Format example: "hash (refs) message"
+func parseOnelineFormat(output string) []LogItem {
+	var logItems []LogItem
+
+	// Parse oneline format: "hash (refs) message"
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+
+		// Extract parts from the oneline format
+		item := LogItem{}
+
+		// Extract commit hash (first part of the line before space)
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) > 0 {
+			item.Commit = parts[0]
+		}
+
+		// Check for tag references and message
+		if len(parts) > 1 {
+			rest := parts[1]
+			// Look for refs section: (tag: v1.0.0, ...)
+			if strings.Contains(rest, "(") && strings.Contains(rest, ")") {
+				refStart := strings.Index(rest, "(")
+				refEnd := strings.Index(rest, ")")
+				if refStart != -1 && refEnd != -1 && refEnd > refStart {
+					refSection := rest[refStart+1 : refEnd]
+					// Extract message after the refs section
+					if refEnd+2 < len(rest) {
+						item.Message = strings.TrimSpace(rest[refEnd+2:])
+					}
+
+					// Extract tags from refs
+					refs := strings.Split(refSection, ",")
+					for _, ref := range refs {
+						ref = strings.TrimSpace(ref)
+						if strings.HasPrefix(ref, "tag: ") {
+							tag := strings.TrimPrefix(ref, "tag: ")
+							item.Tags = append(item.Tags, tag)
+						}
+					}
+				} else {
+					// No proper refs format, treat everything as message
+					item.Message = rest
+				}
+			} else {
+				// No refs section, treat everything as message
+				item.Message = rest
+			}
+		}
+
+		logItems = append(logItems, item)
+	}
+
+	return logItems
+}
+
+// parseMultilineFormat parses git log output in the full format and returns a slice of LogItems.
+// Format example:
+// commit hash (refs)
+// Author: author
+// Date: date
+//
+//	message
+func parseMultilineFormat(output string) []LogItem {
+	var logItems []LogItem
+
+	// Parse full format
+	lines := strings.Split(output, "\n")
+	var currentItem *LogItem
+	var collectingMessage bool
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "commit ") {
+			// Start a new commit
+			if currentItem != nil {
+				logItems = append(logItems, *currentItem)
+			}
+
+			currentItem = &LogItem{}
+			collectingMessage = false
+
+			// Extract commit hash and refs
+			commitLine := strings.TrimPrefix(line, "commit ")
+			parts := strings.SplitN(commitLine, " ", 2)
+			if len(parts) > 0 {
+				currentItem.Commit = parts[0]
+			}
+
+			// Extract tags from refs if present
+			if len(parts) > 1 && strings.HasPrefix(parts[1], "(") && strings.Contains(parts[1], ")") {
+				refSection := parts[1]
+				refSection = strings.TrimPrefix(refSection, "(")
+				refSection = strings.TrimSuffix(refSection, ")")
+
+				refs := strings.Split(refSection, ",")
+				for _, ref := range refs {
+					ref = strings.TrimSpace(ref)
+					if strings.HasPrefix(ref, "tag: ") {
+						tag := strings.TrimPrefix(ref, "tag: ")
+						currentItem.Tags = append(currentItem.Tags, tag)
+					}
+				}
+			}
+		} else if strings.HasPrefix(line, "Author: ") {
+			if currentItem != nil {
+				currentItem.Author = strings.TrimPrefix(line, "Author: ")
+			}
+		} else if strings.HasPrefix(line, "Date: ") {
+			if currentItem != nil {
+				currentItem.Date = strings.TrimSpace(strings.TrimPrefix(line, "Date: "))
+			}
+		} else if strings.TrimSpace(line) == "" {
+			// Empty line after date marks the start of the commit message
+			collectingMessage = true
+		} else if collectingMessage && currentItem != nil {
+			// Collecting the commit message
+			line = strings.TrimSpace(line)
+			if currentItem.Message == "" {
+				currentItem.Message = line
+			} else {
+				currentItem.Message += "\n" + line
+			}
+		}
+	}
+
+	// Add the last item
+	if currentItem != nil {
+		logItems = append(logItems, *currentItem)
+	}
+
+	return logItems
+}
+
+type RevListOptions struct {
+	// Range is the commit range to list commits from (e.g. "commit1..commit2")
+	Range string
+
+	// AncestryPath ensures that the returned commits are in the direct path
+	AncestryPath bool
+
+	// Count returns only the count of commits instead of commit hashes
+	Count bool
+
+	// MaxCount limits the number of commits returned
+	MaxCount int
+}
+
+// RevList runs git rev-list with the specified options and returns the list of commit hashes
+func (r *Repo) RevList(options RevListOptions) ([]string, error) {
+	args := []string{"rev-list"}
+	
+	if options.AncestryPath {
+		args = append(args, "--ancestry-path")
+	}
+	
+	if options.Count {
+		args = append(args, "--count")
+	}
+	
+	if options.MaxCount > 0 {
+		args = append(args, "--max-count", fmt.Sprintf("%d", options.MaxCount))
+	}
+	
+	// Add the range
+	if options.Range != "" {
+		args = append(args, options.Range)
+	}
+	
+	// Execute the command
+	stdout, stderr, err := r.Client.Exec(args...)
+	if err != nil {
+		return nil, fmt.Errorf("git rev-list failed: %w\nstdout: %s\nstderr: %s", 
+			err, stdout, stderr)
+	}
+	
+	// Split output into lines and clean each line
+	output := strings.TrimSpace(string(stdout))
+	if output == "" {
+		return []string{}, nil
+	}
+	
+	commits := strings.Split(output, "\n")
+	for i, commit := range commits {
+		commits[i] = strings.TrimSpace(commit)
+	}
+	
+	return commits, nil
+}
+
+// CountCommits returns the number of commits from a reference (HEAD by default)
+// This is a convenience method for RevList with the --count option
+func (r *Repo) CountCommits(ref string) (int, error) {
+	if ref == "" {
+		ref = "HEAD"
+	}
+	
+	options := RevListOptions{
+		Count: true,
+		Range: ref,
+	}
+	
+	commits, err := r.RevList(options)
+	if err != nil {
+		return 0, err
+	}
+	
+	if len(commits) == 0 {
+		return 0, nil
+	}
+	
+	// Parse the count result
+	count, err := strconv.Atoi(commits[0])
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse commit count: %w", err)
+	}
+	
+	return count, nil
+}
+
+// CommitSearchOptions defines configuration options for the commit search operation
+type CommitSearchOptions struct {
+	// MaxDepth is the maximum depth to search for commits
+	// Default: 1024
+	MaxDepth int
+
+	// OperationTimeout is the timeout for each individual git operation
+	// within the commit search (fetch, rev-list, etc.)
+	// Default: 30 seconds
+	OperationTimeout time.Duration
+}
+
+// DefaultCommitSearchOptions returns the default options for commit search
+func DefaultCommitSearchOptions() *CommitSearchOptions {
+	return &CommitSearchOptions{
+		MaxDepth:         1024,
+		OperationTimeout: 30 * time.Second,
+	}
+}
+
+// FindCommitWithExponentialDepth searches for a commit in a Git repository using an exponential backoff strategy,
+// doubling the fetch depth with each iteration until the target commit is found.
+// This approach drastically reduces the number of network round trips needed compared to
+// a linear depth increase, especially for commits deep in the history.
+//
+// Parameters:
+//   - targetCommit: The commit hash to search for
+//   - opts: Optional configuration options. If nil, default options will be used.
+//
+// Returns the path of commits from HEAD to the target commit (inclusive) if found.
+// The first element is HEAD, the last element is the target commit.
+// Returns nil if the commit was not found.
+// Also returns an error if any issues occurred during the search.
+func (r *Repo) FindCommitWithExponentialDepth(targetCommit string, opts *CommitSearchOptions) ([]string, error) {
+	// Use default options if none provided
+	if opts == nil {
+		opts = DefaultCommitSearchOptions()
+	}
+	
+	// Validate inputs
+	if targetCommit == "" {
+		return nil, fmt.Errorf("empty target commit")
+	}
+
+	// Check if the commit already exists in the repository before attempting any fetches
+	commitExists, err := r.commitExists(targetCommit, opts.OperationTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("error in initial commit existence check: %w", err)
+	}
+	if commitExists {
+		return r.buildCommitPath(targetCommit, opts.OperationTimeout)
+	}
+
+	// Initialize the depth and maximum depth
+	depth := 1
+	maxDepth := opts.MaxDepth
+
+	// Get the remote name - typically "origin" in most repositories
+	remote := "origin"
+
+	// Keep doubling the depth until we reach maxDepth
+	for depth <= maxDepth {
+		// Create fetch options with the current depth
+		fetchOpts := FetchOptions{
+			Depth: depth,
+		}
+
+		// Attempt to fetch with the current depth
+
+		// Use a bounded timeout for each fetch operation
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), opts.OperationTimeout)
+
+		// Use a channel to manage fetch operation with timeout
+		done := make(chan error, 1)
+		go func() {
+			done <- r.Fetch(remote, fetchOpts)
+		}()
+
+		// Wait for either fetch completion or timeout
+		var fetchErr error
+		select {
+		case fetchErr = <-done:
+			// Fetch completed
+		case <-fetchCtx.Done():
+			fetchCancel()
+			return nil, fmt.Errorf("fetch operation timed out after %v at depth %d", opts.OperationTimeout, depth)
+		}
+
+		// Clean up the context regardless of outcome
+		fetchCancel()
+
+		if fetchErr != nil {
+			return nil, fmt.Errorf("error fetching from repository with depth %d: %w", depth, fetchErr)
+		}
+
+		// Check if the target commit is now available in the repository
+		commitExists, err := r.commitExists(targetCommit, opts.OperationTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("error checking if commit exists: %w", err)
+		}
+
+		if commitExists {
+			return r.buildCommitPath(targetCommit, opts.OperationTimeout)
+		}
+
+		// Double the depth for next iteration
+		depth *= 2
+	}
+
+	// If we've reached this point, we didn't find the commit within maxDepth
+	return nil, nil
+}
+
+// commitExists checks if a commit exists in the repository.
+func (r *Repo) commitExists(commitID string, timeout time.Duration) (bool, error) {
+	if commitID == "" {
+		return false, fmt.Errorf("empty commit ID")
+	}
+
+	// Use context with timeout for the operation
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Use a channel to make the operation cancellable with timeout
+	done := make(chan struct {
+		exists bool
+		err    error
+	})
+
+	go func() {
+		// Call the CatFile method with options
+		options := CatFileOptions{
+			Exists:   true,
+			ObjectID: commitID,
+		}
+		exists, _, err := r.CatFile(options)
+		done <- struct {
+			exists bool
+			err    error
+		}{exists, err}
+	}()
+
+	// Wait for either completion or timeout
+	select {
+	case result := <-done:
+		return result.exists, result.err
+
+	case <-ctx.Done():
+		// If the context timed out, return an error
+		return false, fmt.Errorf("commit existence check timed out after %v", timeout)
+	}
+}
+
+// buildCommitPath builds a path of commits from HEAD to the target commit.
+// Returns a slice where the first element is HEAD and the last element is the target commit.
+func (r *Repo) buildCommitPath(targetCommit string, timeout time.Duration) ([]string, error) {
+	if targetCommit == "" {
+		return nil, fmt.Errorf("empty target commit")
+	}
+
+	// Get the HEAD commit first with timeout
+	headCtx, headCancel := context.WithTimeout(context.Background(), timeout)
+	headDone := make(chan struct {
+		commit string
+		err    error
+	})
+
+	go func() {
+		// Use the RevParse method
+		commit, err := r.RevParse("HEAD")
+		result := struct {
+			commit string
+			err    error
+		}{}
+
+		if err != nil {
+			result.err = fmt.Errorf("error getting HEAD commit: %w", err)
+		} else {
+			result.commit = commit
+		}
+		headDone <- result
+	}()
+
+	// Wait for command completion or timeout
+	var headCommit string
+	var headErr error
+
+	select {
+	case result := <-headDone:
+		// Command completed
+		headCommit = result.commit
+		headErr = result.err
+	case <-headCtx.Done():
+		headCancel()
+		return nil, fmt.Errorf("HEAD commit lookup timed out after %v", timeout)
+	}
+	headCancel() // Always cancel the context
+
+	if headErr != nil {
+		return nil, headErr
+	}
+
+	// Now use the RevList method with timeout to get commits between HEAD and target
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	revListDone := make(chan struct {
+		commits []string
+		err     error
+	})
+
+	go func() {
+		// Use the RevList method
+		revListOpts := RevListOptions{
+			Range:       targetCommit + "..HEAD",
+			AncestryPath: true,
+		}
+
+		commits, err := r.RevList(revListOpts)
+		revListDone <- struct {
+			commits []string
+			err     error
+		}{commits, err}
+	}()
+
+	// Wait for rev-list completion or timeout
+	var commits []string
+	var revListErr error
+
+	select {
+	case result := <-revListDone:
+		commits = result.commits
+		revListErr = result.err
+	case <-ctx.Done():
+		cancel() // Cancel context before returning on timeout
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("rev-list operation timed out after %v", timeout)
+		}
+		return nil, ctx.Err() // Handle other context errors
+	}
+
+	cancel() // Cancel context for normal completion path
+
+	if revListErr != nil {
+		return nil, fmt.Errorf("error running rev-list: %w", revListErr)
+	}
+
+	// Build the path - first element is HEAD
+	commitPath := []string{headCommit}
+
+	// Add the intermediate commits if any
+	if len(commits) > 0 {
+		commitPath = append(commitPath, commits...)
+	}
+
+	// Add target commit as the last element if it's not already included
+	if len(commitPath) == 0 || commitPath[len(commitPath)-1] != targetCommit {
+		commitPath = append(commitPath, targetCommit)
+	}
+
+	return commitPath, nil
+}
+
+func (r *Repo) Log(options LogOptions) ([]LogItem, error) {
+	args := []string{"log"}
+	if options.Source {
+		args = append(args, "--source")
+	}
+	if options.Oneline {
+		args = append(args, "--oneline")
+	}
+	if options.Decorate {
+		args = append(args, "--decorate")
+	}
+	if options.Tags {
+		args = append(args, "--tags")
+	}
+	if options.Commit1 != "" {
+		args = append(args, options.Commit1)
+	}
+	if options.Commit2 != "" {
+		args = append(args, options.Commit2)
+	}
+	stdout, stderr, err := r.Client.Exec(args...)
+	if err != nil {
+		return nil, fmt.Errorf("git log failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+
+	var logItems []LogItem
+
+	if options.Oneline {
+		logItems = parseOnelineFormat(string(stdout))
+	} else {
+		logItems = parseMultilineFormat(string(stdout))
+	}
+
+	return logItems, nil
 }
