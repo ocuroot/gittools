@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -382,14 +383,14 @@ func (r *Repo) FileAtCommit(commit string, path string) (string, error) {
 }
 
 // RevParse executes git rev-parse with the given arguments
-// Common usages include getting HEAD commit (RevParse("HEAD")), 
+// Common usages include getting HEAD commit (RevParse("HEAD")),
 // checking if a string is a valid reference (RevParse("--verify", ref)),
 // and getting the short version of a commit (RevParse("--short", commit))
 func (r *Repo) RevParse(args ...string) (string, error) {
 	cmdArgs := append([]string{"rev-parse"}, args...)
 	stdout, stderr, err := r.Client.Exec(cmdArgs...)
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse failed: %w\nstdout: %s\nstderr: %s", 
+		return "", fmt.Errorf("git rev-parse failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
 	}
 	return strings.TrimSpace(string(stdout)), nil
@@ -444,7 +445,7 @@ func (r *Repo) CatFile(options CatFileOptions) (exists bool, content string, err
 
 	// Execute the command
 	stdout, stderr, err := r.Client.Exec(args...)
-	
+
 	if err != nil {
 		// For -e flag, exit status 1 means the object doesn't exist
 		// This is expected behavior, not an error condition
@@ -455,12 +456,12 @@ func (r *Repo) CatFile(options CatFileOptions) (exists bool, content string, err
 		// For other operations, check common error messages that indicate
 		// a non-existent object rather than a system error
 		if strings.Contains(string(stderr), "Not a valid object name") ||
-		   strings.Contains(string(stderr), "does not exist") ||
-		   strings.Contains(string(stderr), "could not get object") ||
-		   strings.Contains(string(stderr), "fatal: not a valid object") {
+			strings.Contains(string(stderr), "does not exist") ||
+			strings.Contains(string(stderr), "could not get object") ||
+			strings.Contains(string(stderr), "fatal: not a valid object") {
 			return false, "", nil
 		}
-		
+
 		return false, "", fmt.Errorf("git cat-file failed: %w\nstderr: %s", err, stderr)
 	}
 
@@ -789,42 +790,42 @@ type RevListOptions struct {
 // RevList runs git rev-list with the specified options and returns the list of commit hashes
 func (r *Repo) RevList(options RevListOptions) ([]string, error) {
 	args := []string{"rev-list"}
-	
+
 	if options.AncestryPath {
 		args = append(args, "--ancestry-path")
 	}
-	
+
 	if options.Count {
 		args = append(args, "--count")
 	}
-	
+
 	if options.MaxCount > 0 {
 		args = append(args, "--max-count", fmt.Sprintf("%d", options.MaxCount))
 	}
-	
+
 	// Add the range
 	if options.Range != "" {
 		args = append(args, options.Range)
 	}
-	
+
 	// Execute the command
 	stdout, stderr, err := r.Client.Exec(args...)
 	if err != nil {
-		return nil, fmt.Errorf("git rev-list failed: %w\nstdout: %s\nstderr: %s", 
+		return nil, fmt.Errorf("git rev-list failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
 	}
-	
+
 	// Split output into lines and clean each line
 	output := strings.TrimSpace(string(stdout))
 	if output == "" {
 		return []string{}, nil
 	}
-	
+
 	commits := strings.Split(output, "\n")
 	for i, commit := range commits {
 		commits[i] = strings.TrimSpace(commit)
 	}
-	
+
 	return commits, nil
 }
 
@@ -834,32 +835,32 @@ func (r *Repo) CountCommits(ref string) (int, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
-	
+
 	options := RevListOptions{
 		Count: true,
 		Range: ref,
 	}
-	
+
 	commits, err := r.RevList(options)
 	if err != nil {
 		return 0, err
 	}
-	
+
 	if len(commits) == 0 {
 		return 0, nil
 	}
-	
+
 	// Parse the count result
 	count, err := strconv.Atoi(commits[0])
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse commit count: %w", err)
 	}
-	
+
 	return count, nil
 }
 
-// CommitSearchOptions defines configuration options for the commit search operation
-type CommitSearchOptions struct {
+// GetCommitsBetweenOptions defines configuration options for the commit search operation
+type GetCommitsBetweenOptions struct {
 	// MaxDepth is the maximum depth to search for commits
 	// Default: 1024
 	MaxDepth int
@@ -868,47 +869,77 @@ type CommitSearchOptions struct {
 	// within the commit search (fetch, rev-list, etc.)
 	// Default: 30 seconds
 	OperationTimeout time.Duration
+
+	// DoNotExpandDepth controls whether the search can expand the clone depth
+	// If true, the search will only use the existing clone depth and not fetch additional history
+	// This is useful when you want to only search within the currently available history
+	// Default: false (depth can be expanded)
+	DoNotExpandDepth bool
 }
 
 // DefaultCommitSearchOptions returns the default options for commit search
-func DefaultCommitSearchOptions() *CommitSearchOptions {
-	return &CommitSearchOptions{
+func DefaultCommitSearchOptions() *GetCommitsBetweenOptions {
+	return &GetCommitsBetweenOptions{
 		MaxDepth:         1024,
 		OperationTimeout: 30 * time.Second,
+		DoNotExpandDepth: false,
 	}
 }
 
-// FindCommitWithExponentialDepth searches for a commit in a Git repository using an exponential backoff strategy,
-// doubling the fetch depth with each iteration until the target commit is found.
+// GetCommitsBetween retrieves all commits between two specified commits (inclusive).
+// It uses an exponential backoff strategy for fetching, doubling the fetch depth with each iteration
+// until both commits are found.
+//
+// If opts.DoNotExpandDepth is true, the function will only look in the existing repository
+// and not perform any fetches to expand history. This is useful when you want to work only
+// with the commits already available locally, such as in CI pipelines where network access
+// is limited or when performance is critical.
+//
 // This approach drastically reduces the number of network round trips needed compared to
 // a linear depth increase, especially for commits deep in the history.
 //
 // Parameters:
-//   - targetCommit: The commit hash to search for
+//   - earliestCommit: The earlier commit hash
+//   - latestCommit: The later commit hash
 //   - opts: Optional configuration options. If nil, default options will be used.
 //
-// Returns the path of commits from HEAD to the target commit (inclusive) if found.
-// The first element is HEAD, the last element is the target commit.
-// Returns nil if the commit was not found.
+// Returns the list of commits between earliestCommit and latestCommit (inclusive) if found.
+// Returns nil if one or both commits were not found.
 // Also returns an error if any issues occurred during the search.
-func (r *Repo) FindCommitWithExponentialDepth(targetCommit string, opts *CommitSearchOptions) ([]string, error) {
+func (r *Repo) GetCommitsBetween(earliestCommit string, latestCommit string, opts *GetCommitsBetweenOptions) ([]string, error) {
 	// Use default options if none provided
 	if opts == nil {
 		opts = DefaultCommitSearchOptions()
 	}
-	
+
 	// Validate inputs
-	if targetCommit == "" {
-		return nil, fmt.Errorf("empty target commit")
+	if earliestCommit == "" {
+		return nil, fmt.Errorf("empty earliest commit")
+	}
+	if latestCommit == "" {
+		return nil, fmt.Errorf("empty latest commit")
 	}
 
-	// Check if the commit already exists in the repository before attempting any fetches
-	commitExists, err := r.commitExists(targetCommit, opts.OperationTimeout)
+	// Check if both commits already exist in the repository before attempting any fetches
+	earliestExists, err := r.commitExists(earliestCommit, opts.OperationTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("error in initial commit existence check: %w", err)
+		return nil, fmt.Errorf("error checking if earliest commit exists: %w", err)
 	}
-	if commitExists {
-		return r.buildCommitPath(targetCommit, opts.OperationTimeout)
+
+	latestExists, err := r.commitExists(latestCommit, opts.OperationTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("error checking if latest commit exists: %w", err)
+	}
+
+	if earliestExists && latestExists {
+		// Both commits exist, get commits between them
+		return r.getCommitsBetween(earliestCommit, latestCommit, opts.OperationTimeout)
+	}
+
+	// If DoNotExpandDepth is true, don't attempt fetching more history
+	if opts.DoNotExpandDepth {
+		// If commits don't exist and we're not allowed to expand depth, return nil
+		return nil, nil
 	}
 
 	// Initialize the depth and maximum depth
@@ -953,14 +984,19 @@ func (r *Repo) FindCommitWithExponentialDepth(targetCommit string, opts *CommitS
 			return nil, fmt.Errorf("error fetching from repository with depth %d: %w", depth, fetchErr)
 		}
 
-		// Check if the target commit is now available in the repository
-		commitExists, err := r.commitExists(targetCommit, opts.OperationTimeout)
+		// Check if both commits are now available in the repository
+		earliestExists, err := r.commitExists(earliestCommit, opts.OperationTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("error checking if commit exists: %w", err)
+			return nil, fmt.Errorf("error checking if earliest commit exists: %w", err)
 		}
 
-		if commitExists {
-			return r.buildCommitPath(targetCommit, opts.OperationTimeout)
+		latestExists, err := r.commitExists(latestCommit, opts.OperationTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("error checking if latest commit exists: %w", err)
+		}
+
+		if earliestExists && latestExists {
+			return r.getCommitsBetween(earliestCommit, latestCommit, opts.OperationTimeout)
 		}
 
 		// Double the depth for next iteration
@@ -969,6 +1005,246 @@ func (r *Repo) FindCommitWithExponentialDepth(targetCommit string, opts *CommitS
 
 	// If we've reached this point, we didn't find the commit within maxDepth
 	return nil, nil
+}
+
+// FindCommitWithExponentialDepth is a backward compatibility wrapper for GetCommitsBetween
+// that keeps existing code working while using the new implementation.
+// It searches for a commit using exponential depth fetching and returns the path from HEAD to the target.
+//
+// Deprecated: Use GetCommitsBetween instead.
+func (r *Repo) FindCommitWithExponentialDepth(targetCommit string, opts *GetCommitsBetweenOptions) ([]string, error) {
+	// Default to HEAD as the latest commit
+	latestCommit, err := r.RevParse("HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("error getting HEAD commit: %w", err)
+	}
+
+	// Use the new implementation to get commits between target and HEAD
+	// For backward compatibility, the path should be from HEAD to target commit
+	return r.GetCommitsBetween(targetCommit, latestCommit, opts)
+}
+
+// getCommitsBetween retrieves all commits between two specified commits (inclusive).
+// The commits are returned in chronological order from earliestCommit to latestCommit.
+// isShallowClone checks if the repository is a shallow clone by checking for the existence of .git/shallow file
+func (r *Repo) isShallowClone() bool {
+	shallowFilePath := filepath.Join(r.RepoPath, ".git", "shallow")
+	_, err := os.Stat(shallowFilePath)
+	return err == nil
+}
+
+func (r *Repo) getCommitsBetween(earliestCommit string, latestCommit string, timeout time.Duration) ([]string, error) {
+	if earliestCommit == "" || latestCommit == "" {
+		return nil, fmt.Errorf("both commits must be specified")
+	}
+
+	// First, try to determine if this is a shallow clone
+	isShallow := r.isShallowClone()
+
+	// Set up the range based on the commit relationship
+	var revListOpts RevListOptions
+	var reversed bool
+
+	if !isShallow {
+		// For full clones, we can reliably determine ancestry
+		isAncestor, err := r.isAncestor(earliestCommit, latestCommit, timeout)
+		if err != nil {
+			// If we can't determine ancestry even in a full clone, try both directions
+			// Default to assuming normal direction (earliest to latest)
+			revListOpts = RevListOptions{
+				Range: earliestCommit + ".." + latestCommit,
+			}
+			reversed = false
+		} else if isAncestor {
+			// Normal case: earliestCommit is an ancestor of latestCommit
+			revListOpts = RevListOptions{
+				Range: earliestCommit + ".." + latestCommit,
+			}
+			reversed = false
+		} else {
+			// Reversed case: latestCommit is an ancestor of earliestCommit
+			revListOpts = RevListOptions{
+				Range: latestCommit + ".." + earliestCommit,
+			}
+			reversed = true
+		}
+	} else {
+		// For shallow clones, we can't reliably determine ancestry
+		// Default to assuming normal direction (earliest to latest)
+		// This assumption may not always be correct, but it's the best we can do
+		revListOpts = RevListOptions{
+			Range: earliestCommit + ".." + latestCommit,
+		}
+		reversed = false
+	}
+
+	// Use RevList with the range argument to get commits between the two points
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	revListDone := make(chan struct {
+		commits []string
+		err     error
+	})
+
+	go func() {
+		// Use RevList with the options we've set up
+
+		commits, err := r.RevList(revListOpts)
+		revListDone <- struct {
+			commits []string
+			err     error
+		}{commits, err}
+	}()
+
+	// Wait for rev-list completion or timeout
+	var commits []string
+	var revListErr error
+
+	select {
+	case result := <-revListDone:
+		commits = result.commits
+		revListErr = result.err
+	case <-ctx.Done():
+		cancel() // Cancel context before returning on timeout
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("rev-list operation timed out after %v", timeout)
+		}
+		return nil, ctx.Err() // Handle other context errors
+	}
+
+	cancel() // Cancel context for normal completion path
+
+	if revListErr != nil {
+		return nil, fmt.Errorf("error running rev-list: %w", revListErr)
+	}
+
+	// With the '..' notation, we need to make sure both endpoints are included
+	// First, check if the endpoints are already in the list
+	earliestFound := false
+	latestFound := false
+	for _, commit := range commits {
+		if commit == earliestCommit {
+			earliestFound = true
+		}
+		if commit == latestCommit {
+			latestFound = true
+		}
+	}
+
+	// In the reversed case, the contract of this function requires that
+	// we need to maintain the earliest commit (which is HEAD) as first in the list,
+	// and the latest commit (which is an ancestor) as last in the list
+	if reversed {
+		// First reverse the commits to get the original order
+		for i, j := 0, len(commits)-1; i < j; i, j = i+1, j-1 {
+			commits[i], commits[j] = commits[j], commits[i]
+		}
+
+		// For the reversed case, the order from git will be from oldest to newest
+		// But we need earliest (HEAD) first and latest (ancestor) last
+		// So we'll reverse it again to put the latest commit first, then
+		// make sure endpoints are in the right place
+		var resultCommits []string
+
+		// Add earliest (HEAD) first
+		resultCommits = append(resultCommits, earliestCommit)
+
+		// Add any commits in between, excluding endpoints
+		for _, commit := range commits {
+			if commit != earliestCommit && commit != latestCommit {
+				resultCommits = append(resultCommits, commit)
+			}
+		}
+
+		// Add latest (ancestor) last
+		resultCommits = append(resultCommits, latestCommit)
+
+		// Replace our commit list
+		commits = resultCommits
+	} else {
+		// Normal case: latest first, earliest last
+		// Add endpoints if needed
+		if !latestFound {
+			commits = append([]string{latestCommit}, commits...)
+		}
+		if !earliestFound {
+			commits = append(commits, earliestCommit)
+		}
+	}
+
+	// Now commits are ordered with latest first and earliest last
+	return commits, nil
+}
+
+// initialCommit returns the first commit in the repository (the root commit)
+func (r *Repo) initialCommit() (string, error) {
+	// Use git rev-list with --max-parents=0 to find the root commit(s)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--max-parents=0", "HEAD")
+	cmd.Dir = r.RepoPath
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error finding initial commit: %w", err)
+	}
+
+	// Get the commit ID (trim newlines)
+	commitID := strings.TrimSpace(string(output))
+	if commitID == "" {
+		return "", fmt.Errorf("no initial commit found")
+	}
+
+	return commitID, nil
+}
+
+// isAncestor checks if the potential ancestor commit is an ancestor of the descendant commit.
+// Returns true if potentialAncestor is an ancestor of descendant, false otherwise.
+func (r *Repo) isAncestor(potentialAncestor string, descendant string, timeout time.Duration) (bool, error) {
+	if potentialAncestor == "" || descendant == "" {
+		return false, fmt.Errorf("both commits must be specified")
+	}
+
+	// First check if both commits exist in the repository
+	existsA, err := r.commitExists(potentialAncestor, timeout)
+	if err != nil {
+		return false, fmt.Errorf("error checking if ancestor commit exists: %w", err)
+	}
+
+	existsD, err := r.commitExists(descendant, timeout)
+	if err != nil {
+		return false, fmt.Errorf("error checking if descendant commit exists: %w", err)
+	}
+
+	// If either commit doesn't exist locally, we can't determine ancestry directly
+	// So we'll assume they're not in an ancestral relationship
+	if !existsA || !existsD {
+		return false, nil
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Run git merge-base --is-ancestor to check if potentialAncestor is an ancestor of descendant
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", potentialAncestor, descendant)
+	cmd.Dir = r.RepoPath
+
+	// The command exits with status 0 if true, status 1 if false, and 128 if error
+	err = cmd.Run()
+	if err == nil {
+		// Exit status 0 means potentialAncestor is an ancestor of descendant
+		return true, nil
+	}
+
+	// Check if it's a normal exit status 1, which means "not an ancestor"
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		// Exit status 1 means potentialAncestor is NOT an ancestor of descendant
+		return false, nil
+	}
+
+	// Any other error is an actual error
+	return false, fmt.Errorf("error checking ancestor relationship: %w", err)
 }
 
 // commitExists checks if a commit exists in the repository.
@@ -1070,7 +1346,7 @@ func (r *Repo) buildCommitPath(targetCommit string, timeout time.Duration) ([]st
 	go func() {
 		// Use the RevList method
 		revListOpts := RevListOptions{
-			Range:       targetCommit + "..HEAD",
+			Range:        targetCommit + "..HEAD",
 			AncestryPath: true,
 		}
 

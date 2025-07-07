@@ -164,7 +164,14 @@ func TestExponentialCommitSearch(t *testing.T) {
 
 		go func() {
 			// Use the repo method instead of the standalone function
-			commitPath, searchErr = shallowCloneRepo.FindCommitWithExponentialDepth(targetCommit, nil)
+			// Get HEAD commit for the latest commit parameter
+			latestCommit, err := shallowCloneRepo.RevParse("HEAD")
+			if err != nil {
+				searchErr = fmt.Errorf("Failed to get HEAD commit: %v", err)
+				done <- true
+				return
+			}
+			commitPath, searchErr = shallowCloneRepo.GetCommitsBetween(targetCommit, latestCommit, nil)
 			done <- true
 		}()
 
@@ -250,7 +257,7 @@ func TestExponentialCommitSearchWithOptions(t *testing.T) {
 	// Create a full clone to add commits
 	t.Log("Creating full clone of test repository")
 	clonePath := filepath.Join(tempDir, "full-clone")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(testCtx, 30*time.Second)
 	gitCmd := exec.CommandContext(ctx, "git", "clone", remotePath, clonePath)
 	err = gitCmd.Run()
 	cancel()
@@ -345,7 +352,7 @@ func TestExponentialCommitSearchWithOptions(t *testing.T) {
 
 	// Create custom search options with shorter timeouts and smaller max depth
 	// This demonstrates how to configure the search for different environments
-	customOptions := &CommitSearchOptions{
+	customOptions := &GetCommitsBetweenOptions{
 		// Use a smaller max depth as we only have a few commits
 		MaxDepth: 16,
 		// Use a single operation timeout for all git operations
@@ -363,7 +370,14 @@ func TestExponentialCommitSearchWithOptions(t *testing.T) {
 
 	t.Log("Starting search with custom options")
 	go func() {
-		commitPath, searchErr = shallowCloneRepo.FindCommitWithExponentialDepth(targetCommit, customOptions)
+		// Get HEAD commit for the latest commit parameter
+		latestCommit, err := shallowCloneRepo.RevParse("HEAD")
+		if err != nil {
+			searchErr = fmt.Errorf("Failed to get HEAD commit: %v", err)
+			done <- true
+			return
+		}
+		commitPath, searchErr = shallowCloneRepo.GetCommitsBetween(targetCommit, latestCommit, customOptions)
 		done <- true
 	}()
 
@@ -598,7 +612,14 @@ func TestExponentialCommitSearchFullClone(t *testing.T) {
 	done := make(chan bool)
 
 	go func() {
-		commitPath, searchErr = cloneRepo.FindCommitWithExponentialDepth(targetCommit, nil)
+		// Get HEAD commit for the latest commit parameter
+		latestCommit, err := cloneRepo.RevParse("HEAD")
+		if err != nil {
+			searchErr = fmt.Errorf("Failed to get HEAD commit: %v", err)
+			done <- true
+			return
+		}
+		commitPath, searchErr = cloneRepo.GetCommitsBetween(targetCommit, latestCommit, nil)
 		done <- true
 	}()
 
@@ -788,4 +809,132 @@ func TestExponentialCommitSearchMissingCommit(t *testing.T) {
 	}
 
 	t.Log("✓ Successfully verified that non-existent commit was correctly handled")
+}
+
+// TestGetCommitsBetweenWithHEADAsEarliest tests the GetCommitsBetween function
+// with HEAD as the earliest commit and an older commit as the latest.
+// This tests that the function works correctly when getting commits in the
+// opposite direction of the normal history.
+func TestGetCommitsBetweenWithHEADAsEarliest(t *testing.T) {
+	SafeTest(t, func(t *testing.T, tempDir string) {
+		if testing.Short() {
+			t.Skip("skipping long-running test")
+		}
+
+		// Set up overall test timeout
+		testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer testCancel()
+
+		// Create a test repository with several commits
+		t.Log("Creating test repository with multiple commits")
+		repoPath := filepath.Join(tempDir, "test-repo")
+		if err := os.MkdirAll(repoPath, 0755); err != nil {
+			t.Fatalf("Failed to create test directory: %v", err)
+		}
+
+		// Initialize the repository
+		cmd := exec.CommandContext(testCtx, "git", "init")
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("Failed to initialize git repository: %v", err)
+		}
+
+		// Configure the repository
+		configCmd := exec.CommandContext(testCtx, "git", "config", "--local", "user.name", "Test User")
+		configCmd.Dir = repoPath
+		if err := configCmd.Run(); err != nil {
+			t.Fatalf("Failed to configure git user name: %v", err)
+		}
+
+		configCmd = exec.CommandContext(testCtx, "git", "config", "--local", "user.email", "test@example.com")
+		configCmd.Dir = repoPath
+		if err := configCmd.Run(); err != nil {
+			t.Fatalf("Failed to configure git user email: %v", err)
+		}
+
+		// Create 5 commits
+		commitIDs := make([]string, 5)
+		for i := 0; i < 5; i++ {
+			// Create a file with some content
+			fileName := fmt.Sprintf("file%d.txt", i)
+			filePath := filepath.Join(repoPath, fileName)
+			fileContent := fmt.Sprintf("Content for file %d\n", i)
+			if err := os.WriteFile(filePath, []byte(fileContent), 0644); err != nil {
+				t.Fatalf("Failed to create file: %v", err)
+			}
+
+			// Add the file
+			addCmd := exec.CommandContext(testCtx, "git", "add", fileName)
+			addCmd.Dir = repoPath
+			if err := addCmd.Run(); err != nil {
+				t.Fatalf("Failed to add file: %v", err)
+			}
+
+			// Commit the file
+			commitCmd := exec.CommandContext(testCtx, "git", "commit", "-m", fmt.Sprintf("Add file %d", i))
+			commitCmd.Dir = repoPath
+			if err := commitCmd.Run(); err != nil {
+				t.Fatalf("Failed to commit file: %v", err)
+			}
+
+			// Get the commit ID
+			revCmd := exec.CommandContext(testCtx, "git", "rev-parse", "HEAD")
+			revCmd.Dir = repoPath
+			output, err := revCmd.Output()
+			if err != nil {
+				t.Fatalf("Failed to get commit hash: %v", err)
+			}
+			commitIDs[i] = strings.TrimSpace(string(output))
+			t.Logf("Created commit %d: %s", i, commitIDs[i][:8])
+		}
+
+		// Open the repository using our library
+		repo, err := Open(repoPath)
+		if err != nil {
+			t.Fatalf("Failed to open repository: %v", err)
+		}
+
+		// Get the HEAD commit
+		headCommit, err := repo.RevParse("HEAD")
+		if err != nil {
+			t.Fatalf("Failed to get HEAD commit: %v", err)
+		}
+		t.Logf("HEAD commit: %s", headCommit[:8])
+
+		// Choose an older commit as the "latest" for our test
+		// We'll use the first commit (oldest) as our "latest" commit
+		oldestCommit := commitIDs[0]
+		t.Logf("Oldest commit: %s", oldestCommit[:8])
+
+		// Use GetCommitsBetween with HEAD as the earliest and oldest commit as latest
+		t.Log("Calling GetCommitsBetween with HEAD as earliest and oldest commit as latest")
+		commits, err := repo.GetCommitsBetween(headCommit, oldestCommit, nil)
+		if err != nil {
+			t.Fatalf("GetCommitsBetween failed: %v", err)
+		}
+
+		// Log the commits we found
+		t.Logf("Found %d commits", len(commits))
+		for i, commit := range commits {
+			t.Logf("  Commit[%d]: %s", i, commit[:8])
+		}
+
+		// Verify we got the expected number of commits
+		expectedCount := 5 // 5 commits total in our repo
+		if len(commits) != expectedCount {
+			t.Fatalf("Expected %d commits, got %d", expectedCount, len(commits))
+		}
+
+		// Verify the commits are in the correct order (latest/HEAD first, oldest/target last)
+		if commits[0] != headCommit {
+			t.Fatalf("First commit should be HEAD (%s), got %s", headCommit[:8], commits[0][:8])
+		}
+
+		if commits[len(commits)-1] != oldestCommit {
+			t.Fatalf("Last commit should be the oldest commit (%s), got %s",
+				oldestCommit[:8], commits[len(commits)-1][:8])
+		}
+
+		t.Log("✓ Successfully verified GetCommitsBetween with HEAD as earliest commit")
+	})
 }
