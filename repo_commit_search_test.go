@@ -90,7 +90,7 @@ func TestExponentialCommitSearch(t *testing.T) {
 		pushDone := make(chan error)
 
 		go func() {
-			pushDone <- cloneRepo.Push("origin", "master")
+			pushDone <- cloneRepo.Push("origin", "main")
 		}()
 
 		select {
@@ -309,7 +309,7 @@ func TestExponentialCommitSearchWithOptions(t *testing.T) {
 	pushDone := make(chan error)
 
 	go func() {
-		pushDone <- repo.Push("origin", "master")
+		pushDone <- repo.Push("origin", "main")
 	}()
 
 	select {
@@ -577,7 +577,7 @@ func TestExponentialCommitSearchFullClone(t *testing.T) {
 	pushDone := make(chan error)
 
 	go func() {
-		pushDone <- repo.Push("origin", "master")
+		pushDone <- repo.Push("origin", "main")
 	}()
 
 	select {
@@ -729,7 +729,7 @@ func TestExponentialCommitSearchMissingCommit(t *testing.T) {
 	pushDone := make(chan error)
 
 	go func() {
-		pushDone <- workRepo.Push("origin", "master")
+		pushDone <- workRepo.Push("origin", "main")
 	}()
 
 	select {

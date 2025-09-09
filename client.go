@@ -136,9 +136,9 @@ func (c *Client) Clone(url, destination string) (*Repo, error) {
 	}
 
 	// Execute git clone
-	output, _, err := c.Exec("clone", url, absPath)
+	stdout, stderr, err := c.Exec("clone", url, absPath)
 	if err != nil {
-		return nil, fmt.Errorf("git clone failed: %s: %w", output, err)
+		return nil, fmt.Errorf("git clone failed: %s, %s: %w", stdout, stderr, err)
 	}
 
 	c2 := *c

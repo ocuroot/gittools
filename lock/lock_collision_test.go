@@ -49,7 +49,7 @@ func TestLockCollision(t *testing.T) {
 		if err := os.MkdirAll(lockDir, 0755); err != nil {
 			t.Fatalf("Failed to create locks directory: %v", err)
 		}
-		
+
 		// Add a .gitkeep file and commit it to ensure directory is tracked
 		gitkeepPath := filepath.Join(lockDir, ".gitkeep")
 		if err := os.WriteFile(gitkeepPath, []byte{}, 0644); err != nil {
@@ -61,13 +61,13 @@ func TestLockCollision(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to commit .gitkeep file: %v", err)
 		}
-		
+
 		// Pull in the commit to repo2 so both repos are in sync
 		currentBranch, err := repo2.CurrentBranch()
 		if err != nil {
 			t.Fatalf("Failed to get current branch: %v", err)
 		}
-		
+
 		err = repo2.Pull("origin", currentBranch)
 		if err != nil {
 			t.Fatalf("Failed to pull changes into repo2: %v", err)
@@ -170,8 +170,8 @@ func TestCheckoutRemote(t *testing.T) {
 			t.Fatalf("Failed to get current branch: %v", err)
 		}
 
-		if branch != "master" {
-			t.Errorf("Expected current branch to be 'master', got '%s'", branch)
+		if branch != "main" {
+			t.Errorf("Expected current branch to be 'main', got '%s'", branch)
 		}
 	})
 }
