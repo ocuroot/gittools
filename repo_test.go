@@ -117,6 +117,24 @@ func TestBasicGitOperations(t *testing.T) {
 			t.Fatalf("Failed to get remote push URL: %v", err)
 		}
 		t.Logf("Remote push URL: %s", remotePushURL)
+
+		remotes, err := repo.Remotes()
+		if err != nil {
+			t.Fatalf("Failed to get remotes: %v", err)
+		}
+		t.Logf("Remotes: %v", remotes)
+		if len(remotes) != 1 {
+			t.Errorf("Expected 1 remote, got %d", len(remotes))
+		}
+		if remotes[0].Name != "origin" {
+			t.Errorf("Expected remote name 'origin', got '%s'", remotes[0].Name)
+		}
+		if remotes[0].URL != remoteURL {
+			t.Errorf("Expected remote URL '%s', got '%s'", remoteURL, remotes[0].URL)
+		}
+		if remotes[0].PushURL != remotePushURL {
+			t.Errorf("Expected remote push URL '%s', got '%s'", remotePushURL, remotes[0].PushURL)
+		}
 	})
 }
 

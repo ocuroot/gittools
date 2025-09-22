@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -369,7 +370,58 @@ func (r *Repo) RemoteURL(remote string, push bool) (string, error) {
 		return "", fmt.Errorf("git remote get-url failed: %w\nstdout: %s\nstderr: %s",
 			err, stdout, stderr)
 	}
-	return string(stdout), nil
+	return strings.TrimSpace(string(stdout)), nil
+}
+
+type Remote struct {
+	Name    string
+	URL     string
+	PushURL string
+}
+
+func (r *Repo) Remotes() ([]Remote, error) {
+	stdout, stderr, err := r.Client.Exec("remote", "-v")
+	if err != nil {
+		return nil, fmt.Errorf("git remote -v failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout, stderr)
+	}
+
+	var remotes = make(map[string]Remote)
+	for _, line := range strings.Split(string(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		remote, found := remotes[fields[0]]
+		if !found {
+			remote = Remote{
+				Name:    fields[0],
+				URL:     fields[1],
+				PushURL: fields[1],
+			}
+		} else {
+			switch fields[2] {
+			case "(fetch)":
+				remote.URL = fields[1]
+			case "(push)":
+				remote.PushURL = fields[1]
+			}
+		}
+
+		remotes[fields[0]] = remote
+	}
+
+	var out []Remote
+	for _, remote := range remotes {
+		out = append(out, remote)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
 }
 
 // FileAtCommit returns the content of a file at a specific commit
