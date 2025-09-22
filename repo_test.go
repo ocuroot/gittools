@@ -31,6 +31,8 @@ func TestBasicGitOperations(t *testing.T) {
 			t.Fatalf("Failed to create GitRepo: %v", err)
 		}
 
+		repo.Client.SetUser("Test User", "test@example.com")
+
 		// Test creating a branch
 		if err := repo.CreateBranch("test-branch"); err != nil {
 			t.Fatalf("Failed to create branch: %v", err)
@@ -73,6 +75,30 @@ func TestBasicGitOperations(t *testing.T) {
 
 		if err := repo.Commit("Test commit", []string{"test.txt"}); err != nil {
 			t.Fatalf("Failed to commit: %v", err)
+		}
+
+		// Verify the commit author and email
+		logOptions := LogOptions{
+			Commit1: "HEAD",
+		}
+		logItems, err := repo.Log(logOptions)
+		if err != nil {
+			t.Fatalf("Failed to get log: %v", err)
+		}
+
+		if len(logItems) == 0 {
+			t.Fatalf("Expected at least one commit in log")
+		}
+
+		latestCommit := logItems[0]
+		expectedAuthor := "Test User <test@example.com>"
+
+		if latestCommit.Author != expectedAuthor {
+			t.Errorf("Expected commit author to be '%s', got '%s'", expectedAuthor, latestCommit.Author)
+		}
+
+		if latestCommit.Message != "Test commit" {
+			t.Errorf("Expected commit message to be 'Test commit', got '%s'", latestCommit.Message)
 		}
 
 		// Add a remote and retrieve the URL
@@ -180,7 +206,8 @@ func setupTestRepo(t *testing.T) string {
 	t.Helper()
 	var err error
 
-	client := Client{}
+	client := &Client{}
+	client.SetUser("Test Repo Setup", "test+setup@example.com")
 
 	// Create a temporary directory for the repository
 	tempDir, err := os.MkdirTemp("", "gitlock-test-")
@@ -195,8 +222,8 @@ func setupTestRepo(t *testing.T) string {
 		t.Fatalf("Failed to initialize git repository: %v", err)
 	}
 
-	repo.ConfigSet("user.name", "Test User")
-	repo.ConfigSet("user.email", "test@example.com")
+	repo.ConfigSet("user.name", "Test Repo")
+	repo.ConfigSet("user.email", "test+repo@example.com")
 
 	// Create an initial commit
 	readme := filepath.Join(tempDir, "README.md")

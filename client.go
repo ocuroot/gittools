@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,21 @@ func NewClient() *Client {
 type Client struct {
 	Binary  string // Path to the git binary. If empty, "git" is used.
 	WorkDir string // Directory to run git commands in. If empty, the current working directory is used.
+
+	AuthorEmail    string
+	AuthorName     string
+	CommitterEmail string
+	CommitterName  string
+}
+
+// SetUser is equivalent to running `git config --global user.email <email>`
+// and `git config --global user.name <name>`
+// It applies only to calls made via this Client and does not persist.
+func (c *Client) SetUser(name, email string) {
+	c.AuthorName = name
+	c.AuthorEmail = email
+	c.CommitterName = name
+	c.CommitterEmail = email
 }
 
 func (c *Client) gitPath() string {
@@ -170,6 +186,20 @@ func (c *Client) Exec(args ...string) ([]byte, []byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
+	cmd.Env = os.Environ()
+	if c.AuthorName != "" {
+		cmd.Env = append(cmd.Env, "GIT_AUTHOR_NAME="+c.AuthorName)
+	}
+	if c.AuthorEmail != "" {
+		cmd.Env = append(cmd.Env, "GIT_AUTHOR_EMAIL="+c.AuthorEmail)
+	}
+	if c.CommitterName != "" {
+		cmd.Env = append(cmd.Env, "GIT_COMMITTER_NAME="+c.CommitterName)
+	}
+	if c.CommitterEmail != "" {
+		cmd.Env = append(cmd.Env, "GIT_COMMITTER_EMAIL="+c.CommitterEmail)
+	}
 
 	err := cmd.Run()
 	return stdout.Bytes(), stderr.Bytes(), err
